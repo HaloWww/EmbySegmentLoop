@@ -1,48 +1,58 @@
+using System.Diagnostics;
 using System.Reflection;
 using MediaBrowser.Common.Configuration;
-using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Plugins;
 
 namespace Emby.Plugins.SegmentLoop;
 
 public sealed class EntryPoint : IServerEntryPoint, IDisposable
 {
-    private readonly IConfigurationManager _configurationManager;
+    private readonly IApplicationPaths _applicationPaths;
 
-    public EntryPoint(IConfigurationManager configurationManager)
+    public EntryPoint(IApplicationPaths applicationPaths)
     {
-        _configurationManager = configurationManager;
+        _applicationPaths = applicationPaths;
     }
 
     public void Run()
     {
-        try { SegmentRepository.Instance.EnsureCreated(); } catch { /* best effort */ }
-
-        // Inject our script tag via Emby's built-in CustomJavascript mechanism.
-        // This requires ZERO file-system writes to the system directory – Emby
-        // reads the configuration and injects the <script> tag into every page.
-        InjectCustomJavascript();
+        try { SegmentRepository.Instance.EnsureCreated(); } catch { /* best-effort */ }
+        InjectLoaderTag();
     }
 
     public void Dispose() { }
 
-    private void InjectCustomJavascript()
+    // Injects <script src="emby/SegmentLoop/ClientScript"> into dashboard
+    // index.html. On Windows this works automatically. On Debian /opt/emby-server/
+    // may be root-owned – if writing fails, the admin only needs to add ONE line
+    // manually and the plugin handles everything else via the API endpoint.
+    private void InjectLoaderTag()
     {
         try
         {
-            var config = _configurationManager.CommonConfiguration;
-            var ui = config.UICustomization ??= new MediaBrowser.Model.Configuration.UICustomization();
-            var ver = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "";
+            var indexPath = Path.Combine(_applicationPaths.ProgramSystemPath,
+                "dashboard-ui", "index.html");
+            if (!File.Exists(indexPath)) return;
 
-            var tag = "<script src=\"emby/SegmentLoop/ClientScript?v=" + ver + "\" defer></script>";
+            var html = File.ReadAllText(indexPath);
+            var tag = "    <script src=\"emby/SegmentLoop/ClientScript\" defer></script>";
 
-            // Only add if not already present
-            if (ui.CustomJavascript == null || !ui.CustomJavascript.Contains("SegmentLoop/ClientScript"))
+            if (html.Contains("SegmentLoop/ClientScript")) return;
+
+            html = html.Replace("</body>", tag + Environment.NewLine + "</body>");
+            File.WriteAllText(indexPath, html);
+
+            if (!OperatingSystem.IsWindows())
             {
-                ui.CustomJavascript = (ui.CustomJavascript ?? "") + "\n" + tag;
-                _configurationManager.SaveConfiguration();
+                try { Process.Start("chmod", $"644 \"{indexPath}\"")?.WaitForExit(3000); }
+                catch { /* ok */ }
             }
         }
-        catch { /* best effort */ }
+        catch
+        {
+            // index.html not writable (e.g. Debian root-owned system dir).
+            // The admin should run ONCE as root:
+            //   sed -i 's|</body>|    <script src="emby/SegmentLoop/ClientScript" defer></script>\n</body>|' /opt/emby-server/system/dashboard-ui/index.html
+        }
     }
 }
