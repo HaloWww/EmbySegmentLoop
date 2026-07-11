@@ -19,8 +19,28 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
 
     public void Run()
     {
-        SegmentRepository.Instance.EnsureCreated();
-        InstallClientAssets();
+        // SQLite init is best-effort: if the native library is missing on this platform
+        // (e.g. Debian where Emby ships its own SQLite via SQLitePCLRaw), we log and
+        // continue – segment storage simply won't persist across restarts but the
+        // frontend features still work.
+        try
+        {
+            SegmentRepository.Instance.EnsureCreated();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SegmentLoop] SQLite init failed (segments will not persist): {ex.Message}");
+        }
+
+        // Always inject client assets regardless of the SQLite outcome.
+        try
+        {
+            InstallClientAssets();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SegmentLoop] Failed to install client assets: {ex.Message}");
+        }
     }
 
     public void Dispose()
