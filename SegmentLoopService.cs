@@ -1,4 +1,5 @@
-﻿using MediaBrowser.Controller.Api;
+﻿using System.Reflection;
+using MediaBrowser.Controller.Api;
 using MediaBrowser.Model.Services;
 using MediaBrowser.Controller.Net;
 
@@ -17,6 +18,11 @@ public sealed class SaveSegmentLoopSegments
 {
     public string ItemId { get; set; } = string.Empty;
     public List<SegmentRecord> Segments { get; set; } = new();
+}
+
+[Route("/SegmentLoop/ClientScript", "GET")]
+public sealed class GetSegmentLoopScript
+{
 }
 
 public sealed class SegmentRecord
@@ -41,5 +47,18 @@ public sealed class SegmentLoopService : BaseApiService
         try { SegmentRepository.Instance.Replace(request.ItemId, request.Segments ?? new()); }
         catch { /* SQLite unavailable on this platform – silently ignore */ }
         return new { Success = true };
+    }
+
+    public object Get(GetSegmentLoopScript request)
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var resourceName = assembly.GetManifestResourceNames()
+            .FirstOrDefault(name => name.EndsWith("segmentloop.js", StringComparison.OrdinalIgnoreCase));
+        if (resourceName == null) return string.Empty;
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        using var reader = new StreamReader(stream!);
+        var js = reader.ReadToEnd();
+        Request.Response.ContentType = "text/javascript; charset=utf-8";
+        return js;
     }
 }
