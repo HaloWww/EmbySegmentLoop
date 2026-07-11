@@ -35,7 +35,7 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
             if (!File.Exists(indexPath)) return;
 
             var html = File.ReadAllText(indexPath);
-            var tag = "    <script src=\"emby/SegmentLoop/ClientScript\" defer></script>";
+            var tag = "    <script src=\"/emby/SegmentLoop/ClientScript\" defer></script>";
 
             if (html.Contains("SegmentLoop/ClientScript")) return;
 

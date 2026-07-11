@@ -20,7 +20,7 @@ DASHBOARD_DIR="${SYSTEM_DIR}/dashboard-ui"
 PLUGINS_DIR="/var/lib/emby/plugins"
 INDEX_HTML="${DASHBOARD_DIR}/index.html"
 OLD_JS_DIR="${DASHBOARD_DIR}/modules/segmentloop"
-SCRIPT_TAG='    <script src="emby/SegmentLoop/ClientScript" defer></script>'
+SCRIPT_TAG='    <script src="/emby/SegmentLoop/ClientScript" defer></script>'
 
 echo "==> Stopping Emby Server..."
 systemctl stop emby-server || true
