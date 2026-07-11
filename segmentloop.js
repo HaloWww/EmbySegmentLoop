@@ -3,6 +3,7 @@
 
     var storageKey = 'embySegmentLoop.v1';
     var pendingKey = 'embySegmentLoop.pending';
+    var pluginId = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
     var rememberedItemKey = 'embySegmentLoop.currentItem';
     var activeSegment = null;
     var markStartMs = null;
@@ -791,11 +792,61 @@
         document.head.appendChild(style);
     }
 
+    function openPluginSettingsDialog() {
+        var old = document.querySelector('.embySegPluginSettingsOverlay');
+        if (old) { old.remove(); }
+        var overlay = document.createElement('div');
+        overlay.className = 'embySegmentDialogOverlay embySegPluginSettingsOverlay';
+        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>\u5feb\u6377\u952e\u8bbe\u7f6e</h2><button type="button" class="embySegmentDialogClose" title="\u5173\u95ed">&#xe5cd;</button></div><div class="embySegmentDialogBody"><div class="embySegPluginField"><label class="embySegPluginLabel">\u5f00\u59cb\u5feb\u6377\u952e</label><input class="embySegPluginInput" id="slgStart" type="text" placeholder="["><div class="embySegPluginDesc">\u9ed8\u8ba4 [\u3002\u586b\u5199 KeyboardEvent.key \u7684\u503c\u3002</div></div><div class="embySegPluginField"><label class="embySegPluginLabel">\u7ed3\u675f\u5feb\u6377\u952e</label><input class="embySegPluginInput" id="slgEnd" type="text" placeholder="]"><div class="embySegPluginDesc">\u9ed8\u8ba4 ]\u3002\u4fdd\u5b58\u540e\u5237\u65b0 Web \u9875\u9762\u751f\u6548\u3002</div></div><div class="embySegPluginField"><label class="embySegPluginLabel">\u7247\u6bb5\u6570\u636e\u5e93\u8def\u5f84</label><input class="embySegPluginInput" id="slgPath" type="text" placeholder="\u7559\u7a7a\u4f7f\u7528\u9ed8\u8ba4\u8def\u5f84"><div class="embySegPluginDesc">\u7559\u7a7a\u65f6\u4fdd\u5b58\u5230 programdata/metadata/segmentloop/segments.db\u3002</div></div></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised">\u53d6\u6d88</button><button type="button" class="embySegmentSave raised">\u4fdd\u5b58</button></div></div>';
+        document.body.appendChild(overlay);
+        if (typeof ApiClient !== 'undefined') {
+            ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
+                var s = document.getElementById('slgStart'), e = document.getElementById('slgEnd'), p = document.getElementById('slgPath');
+                if (s) s.value = cfg.StartKey || '[';
+                if (e) e.value = cfg.EndKey || ']';
+                if (p && cfg.StoragePath != null) p.value = cfg.StoragePath;
+            });
+        }
+        var closeDialog = function () { overlay.remove(); };
+        overlay.querySelector('.embySegmentDialogClose').onclick = closeDialog;
+        overlay.querySelector('.embySegmentCancel').onclick = closeDialog;
+        overlay.onclick = function (e) { if (e.target === overlay) closeDialog(); };
+        overlay.querySelector('.embySegmentSave').onclick = function () {
+            var s = document.getElementById('slgStart'), e = document.getElementById('slgEnd'), p = document.getElementById('slgPath');
+            var sk = s && s.value || '[', ek = e && e.value || ']', pt = p && p.value || '';
+            if (typeof ApiClient === 'undefined') { closeDialog(); return; }
+            ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
+                cfg.StartKey = sk; cfg.EndKey = ek; cfg.StoragePath = pt;
+                return ApiClient.updatePluginConfiguration(pluginId, cfg);
+            }).then(function () {
+                closeDialog();
+                showToast('\u5df2\u4fdd\u5b58\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u8ba9\u5feb\u6377\u952e\u914d\u7f6e\u751f\u6548');
+            });
+        };
+    }
+
+    function renderSettingsItem() {
+        var routes = document.querySelector('.dynamicRoutes');
+        if (!routes || !routes.children.length) { return; }
+        if (routes.querySelector('.embySegLoopSettingsItem')) { return; }
+        var item = document.createElement('a');
+        item.className = 'navMenuOption navMenuOption-settings embySegLoopSettingsItem';
+        item.href = 'javascript:void(0)';
+        item.innerHTML =
+            '<div class="settingsMenuListItemBody settingsMenuListItemBody-extrapadding">' +
+            '<i class="md-icon navMenuOption-icon" style="font-family:Material Icons,Arial">&#xe227;</i>' +
+            '<div class="navMenuOption-text">Segment Loop</div>' +
+            '</div>';
+        item.onclick = function (e) { e.preventDefault(); openPluginSettingsDialog(); };
+        routes.appendChild(item);
+    }
+
     function renderAll() {
         isRendering = true;
         injectStyle();
         renderDetailSegments();
         renderPlaybackSegments();
+        renderSettingsItem();
         setTimeout(function () {
             isRendering = false;
         }, 100);
