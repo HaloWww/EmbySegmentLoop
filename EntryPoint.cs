@@ -59,12 +59,30 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
 
         Directory.CreateDirectory(Path.GetDirectoryName(targetScriptPath)!);
         File.WriteAllText(targetScriptPath, ReadEmbeddedScript());
+        FixFilePermissions(targetScriptPath);
         WriteClientConfiguration(_applicationPaths, Plugin.Instance?.Configuration ?? new PluginConfiguration());
 
         var html = File.ReadAllText(indexPath);
         html = RemoveOwnScriptTags(html);
         html = EnsureScriptTags(html, ConfigScriptTag + Environment.NewLine + ScriptTag);
         File.WriteAllText(indexPath, html);
+        FixFilePermissions(indexPath);
+    }
+
+    private static void FixFilePermissions(string path)
+    {
+        // On Linux, files created by this plugin must be readable by the web-server
+        // user.  Ignore failures – if chmod is unavailable we still have the file.
+        try
+        {
+            var info = new FileInfo(path);
+            if (!OperatingSystem.IsWindows())
+            {
+                info.UnixFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                                    UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+            }
+        }
+        catch { /* best effort */ }
     }
 
     private static string ReadEmbeddedScript()
