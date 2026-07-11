@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -59,30 +60,48 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
 
         Directory.CreateDirectory(Path.GetDirectoryName(targetScriptPath)!);
         File.WriteAllText(targetScriptPath, ReadEmbeddedScript());
-        FixFilePermissions(targetScriptPath);
         WriteClientConfiguration(_applicationPaths, Plugin.Instance?.Configuration ?? new PluginConfiguration());
+        FixUnixPermissions(Path.GetDirectoryName(targetScriptPath)!);
 
         var html = File.ReadAllText(indexPath);
         html = RemoveOwnScriptTags(html);
         html = EnsureScriptTags(html, ConfigScriptTag + Environment.NewLine + ScriptTag);
         File.WriteAllText(indexPath, html);
-        FixFilePermissions(indexPath);
+        FixUnixPermissions(Path.GetDirectoryName(indexPath)!);
     }
 
-    private static void FixFilePermissions(string path)
+    private static void FixUnixPermissions(string directoryPath)
     {
-        // On Linux, files created by this plugin must be readable by the web-server
-        // user.  Ignore failures – if chmod is unavailable we still have the file.
-        try
+        if (!OperatingSystem.IsWindows())
         {
-            var info = new FileInfo(path);
-            if (!OperatingSystem.IsWindows())
+            try
             {
-                info.UnixFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite |
-                                    UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+                // Ensure directory is traversable (755)
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "chmod",
+                    Arguments = $"755 \"{directoryPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                })?.WaitForExit(3000);
+                // Ensure all contained files are readable (644)
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "chmod",
+                    Arguments = $"644 \"{directoryPath}\"/*",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                })?.WaitForExit(3000);
+            }
+            catch
+            {
+                // best effort – plugin still works without this
             }
         }
-        catch { /* best effort */ }
     }
 
     private static string ReadEmbeddedScript()
