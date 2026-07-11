@@ -32,7 +32,6 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>
     {
         base.UpdateConfiguration(configuration);
         ConfigureRepository(Configuration);
-        EntryPoint.WriteClientConfiguration(ApplicationPaths, Configuration);
     }
 
     private void ConfigureRepository(PluginConfiguration configuration)
