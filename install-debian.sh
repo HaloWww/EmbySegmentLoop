@@ -60,14 +60,12 @@ if [ -f "${ITEM_HTML}" ]; then
     if ! grep -q 'embySegmentDetailList' "${ITEM_HTML}"; then
         python3 -c "
 html = open('${ITEM_HTML}').read()
-# Find the closing </div> right after the mainDetailButtons section
-# and insert our static container before the next element starts.
-marker = 'detail-lineItem\"'
-idx = html.find(marker)
+# Insert after the closing </div> of mainDetailButtons
+idx = html.find('mainDetailButtons')
 if idx > 0:
     closeDiv = html.find('</div>', idx)
     if closeDiv > 0:
-        insert = '\n                            <div class=\"embySegmentDetailList verticalFieldItem detail-lineItem\" style=\"display:none\"><div class=\"embySegmentTitle\">\u5faa\u73af\u7247\u6bb5</div></div>'
+        insert = '\n<div class=\"embySegmentDetailList verticalFieldItem detail-lineItem\" style=\"display:none\"><div class=\"embySegmentTitle\">循环片段</div></div>'
         html = html[:closeDiv+6] + insert + html[closeDiv+6:]
         open('${ITEM_HTML}','w').write(html)
         print('==> Segment container injected into item.html')
