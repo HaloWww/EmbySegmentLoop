@@ -18,6 +18,7 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
     {
         try { SegmentRepository.Instance.EnsureCreated(); } catch { }
         InjectScript();
+        InjectItemJsHook();
     }
 
     public void Dispose() { }
@@ -64,5 +65,20 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
         if (s == null) return "";
         using var r = new StreamReader(s);
         return r.ReadToEnd();
+    }
+
+    private void InjectItemJsHook()
+    {
+        try
+        {
+            var path = Path.Combine(_applicationPaths.ProgramSystemPath,
+                "dashboard-ui", "item", "item.js");
+            if (!File.Exists(path)) return;
+            var js = File.ReadAllText(path);
+            var hook = ";if(window.EmbySegLoop)setTimeout(function(){window.EmbySegLoop.render()},500);";
+            if (js.Contains("EmbySegLoop")) return;
+            File.WriteAllText(path, js + hook);
+        }
+        catch { }
     }
 }

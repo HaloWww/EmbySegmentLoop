@@ -542,52 +542,56 @@
     }
 
     function renderDetailSegments() {
-        var buttons = document.querySelector('.mainDetailButtons');
-        if (!buttons) return;
-        var itemId = getUrlItemId();
-        if (!itemId) return;
-        var host = document.querySelector('.embySegmentDetailList');
-        if (!host) {
-            host = document.createElement('div');
+        var buttonsList = document.querySelectorAll('.mainDetailButtons');
+        if (!buttonsList.length) return;
+        for (var i = 0; i < buttonsList.length; i++) {
+            var b = buttonsList[i];
+            var itemId = getUrlItemId();
+            if (!itemId) continue;
+            var old = b.parentNode.querySelector('.embySegmentDetailList');
+            if (old) old.remove();
+            var host = document.createElement('div');
             host.className = 'embySegmentDetailList verticalFieldItem detail-lineItem';
-            buttons.parentNode.insertBefore(host, buttons.nextSibling);
+            b.parentNode.insertBefore(host, b.nextSibling);
+            (function(host, itemId) {
+            ensureItemLoaded(itemId).then(function () {
+                var segments = getItemSegments(itemId);
+                if (!segments.length) return;
+                setTimeout(function () {
+                    host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
+                    var rows = document.createElement('div');
+                    rows.className = 'embySegmentRows focuscontainer-x';
+                    segments.forEach(function (segment) {
+                        var wrap = document.createElement('span');
+                        wrap.className = 'embySegmentChipWrap';
+                        var button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = 'embySegmentChip raised';
+                        button.textContent = segment.name || '未命名片段';
+                        button.title = segmentLabel(segment);
+                        button.onclick = function () { playSegmentFromDetail(itemId, segment); };
+                        var edit = document.createElement('button');
+                        edit.type = 'button';
+                        edit.className = 'embySegmentGear paper-icon-button-light';
+                        edit.title = '编辑片段';
+                        edit.setAttribute('aria-label', '编辑片段');
+                        edit.innerHTML = '<i class="md-icon">more_horiz</i>';
+                        edit.onclick = function () { openEditor(itemId, segment); };
+                        wrap.appendChild(button);
+                        wrap.appendChild(edit);
+                        rows.appendChild(wrap);
+                    });
+                    var add = document.createElement('button');
+                    add.type = 'button';
+                    add.className = 'embySegmentAdd raised';
+                    add.textContent = '编辑片段';
+                    add.onclick = function () { openEditor(itemId); };
+                    rows.appendChild(add);
+                    host.appendChild(rows);
+                }, 0);
+            });
+            })(host, itemId);
         }
-        if (host.dataset.rendered === itemId) return;
-        host.dataset.rendered = itemId;
-        ensureItemLoaded(itemId).then(function () {
-        var segments = getItemSegments(itemId);
-        if (!segments.length) return;
-        host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
-        var rows = document.createElement('div');
-        rows.className = 'embySegmentRows focuscontainer-x';
-        segments.forEach(function (segment) {
-            var wrap = document.createElement('span');
-            wrap.className = 'embySegmentChipWrap';
-            var button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'embySegmentChip raised';
-            button.textContent = segment.name || '未命名片段';
-            button.title = segmentLabel(segment);
-            button.onclick = function () { playSegmentFromDetail(itemId, segment); };
-            var edit = document.createElement('button');
-            edit.type = 'button';
-            edit.className = 'embySegmentGear paper-icon-button-light';
-            edit.title = '编辑片段';
-            edit.setAttribute('aria-label', '编辑片段');
-            edit.innerHTML = '<i class="md-icon">more_horiz</i>';
-            edit.onclick = function () { openEditor(itemId, segment); };
-            wrap.appendChild(button);
-            wrap.appendChild(edit);
-            rows.appendChild(wrap);
-        });
-        var add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'embySegmentAdd raised';
-        add.textContent = '编辑片段';
-        add.onclick = function () { openEditor(itemId); };
-        rows.appendChild(add);
-        host.appendChild(rows);
-        });
     }
 
     function renderOsdSegments(itemId) {
@@ -922,7 +926,7 @@
         }, 100);
     }
 
-    document.addEventListener('keydown', onKeyDown, true);
+    window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
     new MutationObserver(function () {
         if (isRendering) {
