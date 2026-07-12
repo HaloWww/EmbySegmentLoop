@@ -932,7 +932,7 @@
     setInterval(renderPlaybackSegments, 1500);
     setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
-    setInterval(renderAll, 2000);
+    setInterval(renderAll, 500);
 
     renderAll();
 }());
