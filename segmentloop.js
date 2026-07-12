@@ -542,15 +542,17 @@
         var currentUrl = location.href;
 
         if (!buttons || !itemId) {
-            clearTimeout(detailRetryTimer);
-            // Only retry if we appear to be on a detail page
-            if (itemId || /[?&]id=/.test(currentUrl)) {
-                // Reset retry counter when URL changes (user navigated to new item)
+            // Don't cancel the running timer – just let it tick. Otherwise
+            // frequent renderAll() calls (from Emby's DOM churn) keep
+            // resetting it and the retry never fires.
+            if (!detailRetryTimer && (itemId || /[?&]id=/.test(currentUrl))) {
                 if (currentUrl !== lastDetailUrl) { lastDetailUrl = currentUrl; }
                 detailRetryTimer = setTimeout(renderDetailSegments, 500);
             }
             return;
         }
+        clearTimeout(detailRetryTimer);
+        detailRetryTimer = null;
         lastDetailUrl = currentUrl;
         ensureItemLoaded(itemId);
         var host = document.querySelector('.embySegmentDetailList');
