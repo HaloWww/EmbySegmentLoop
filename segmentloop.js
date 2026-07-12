@@ -546,6 +546,7 @@
         var itemId = getUrlItemId();
         var host = document.querySelector('.embySegmentDetailList');
         if (!host) { console.log('[SegLoop] renderDetail: no host'); return; }
+        if (!host.offsetParent && !host.getClientRects().length) { console.log('[SegLoop] renderDetail: host hidden'); return; }
         if (!itemId) { console.log('[SegLoop] renderDetail: no itemId, href=' + location.href.substring(location.href.indexOf('#!'))); return; }
         console.log('[SegLoop] renderDetail: itemId=' + itemId + ' hostFound=1');
         ensureItemLoaded(itemId).then(function () {
