@@ -542,22 +542,17 @@
         }
     }
 
-    var renderedItems = {};
-
     function renderDetailSegments() {
         var itemId = getUrlItemId();
         var host = document.querySelector('.embySegmentDetailList');
         if (!host) { console.log('[SegLoop] renderDetail: no host'); return; }
         if (!itemId) { console.log('[SegLoop] renderDetail: no itemId, href=' + location.href.substring(location.href.indexOf('#!'))); return; }
-        if (renderedItems[itemId]) return;  // already rendered for this item
         console.log('[SegLoop] renderDetail: itemId=' + itemId + ' hostFound=1');
         ensureItemLoaded(itemId).then(function () {
             var segments = getItemSegments(itemId);
-            console.log('[SegLoop] renderDetail: loaded itemId=' + itemId + ' count=' + segments.length);
+            console.log('[SegLoop] renderDetail: loaded itemId=' + itemId + ' count=' + segments.length + ' display=' + host.style.display);
             if (!segments.length) return;
-            renderedItems[itemId] = true;
             host.style.display = '';
-            console.log('[SegLoop] renderDetail: set display, now=' + host.style.display + ' innerHTML.len=' + host.innerHTML.length);
             host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
         var rows = document.createElement('div');
         rows.className = 'embySegmentRows focuscontainer-x';
