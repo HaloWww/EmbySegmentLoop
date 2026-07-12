@@ -835,6 +835,9 @@
         if (playButton.getAttribute('data-mode') === 'resume') {
             playButton.setAttribute('data-mode', 'play');
         }
+        if (playButton.getAttribute('data-action') === 'resume') {
+            playButton.setAttribute('data-action', 'play');
+        }
         activeSegment = null;
         markStartMs = null;
         pendingSegmentLaunch = null;
