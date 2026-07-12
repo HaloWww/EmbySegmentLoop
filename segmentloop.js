@@ -2,7 +2,6 @@
     'use strict';
 
     var storageKey = 'embySegmentLoop.v1';
-    var pendingKey = 'embySegmentLoop.pending';
     var pluginId = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
     var rememberedItemKey = 'embySegmentLoop.currentItem';
     var activeSegment = null;
@@ -16,6 +15,7 @@
     var loadedServerItems = {};
     var loadingServerItems = {};
     var itemSegmentCache = {};
+    var pendingSegmentLaunch = null;
 
     function loadState() {
         try {
@@ -467,19 +467,19 @@
 
     function playSegmentFromDetail(itemId, segment) {
         activeSegment = null;
-        localStorage.setItem(pendingKey, JSON.stringify({ itemId: itemId, segmentId: segment.id, time: Date.now() }));
         var video = getVideo();
         if (video) {
             activateSegment(itemId, segment);
             return;
         }
+        pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
         var playButton = document.querySelector('.btnResume:not(.hide), .btnMainPlay:not(.hide), .btnPlay:not(.hide)');
         if (playButton) {
             segmentLaunchInProgress = true;
             playButton.click();
             setTimeout(function () {
                 segmentLaunchInProgress = false;
-            }, 1000);
+            }, 2000);
         } else {
             showToast('未找到播放按钮');
         }
@@ -664,37 +664,26 @@
     }
 
     function tryPendingSegment(itemId) {
-        if (!itemId || Date.now() < playCooldown) {
+        if (!itemId || !pendingSegmentLaunch) {
             return;
         }
-        var pending;
-        try {
-            pending = JSON.parse(localStorage.getItem(pendingKey));
-        } catch (err) {
-            pending = null;
-        }
-        if (!pending || pending.itemId !== itemId || Date.now() - pending.time > 60000) {
+        if (pendingSegmentLaunch.itemId !== itemId) {
             return;
         }
-        var segment = getItemSegments(itemId).filter(function (item) { return item.id === pending.segmentId; })[0];
+        if (Date.now() - pendingSegmentLaunch.time > 60000) {
+            pendingSegmentLaunch = null;
+            return;
+        }
+        var segment = getItemSegments(itemId).filter(function (item) { return item.id === pendingSegmentLaunch.segmentId; })[0];
         if (segment) {
-            localStorage.removeItem(pendingKey);
+            pendingSegmentLaunch = null;
             activateSegment(itemId, segment);
         }
     }
 
     function tryAnyPendingSegment() {
-        if (Date.now() < playCooldown) return;
-        var pending;
-        try {
-            pending = JSON.parse(localStorage.getItem(pendingKey));
-        } catch (err) {
-            pending = null;
-        }
-        if (!pending || Date.now() - pending.time > 60000) {
-            return;
-        }
-        tryPendingSegment(pending.itemId);
+        if (!pendingSegmentLaunch) return;
+        tryPendingSegment(pendingSegmentLaunch.itemId);
     }
 
     function renderPlaybackSegments() {
@@ -728,13 +717,7 @@
             }
             var itemId = item && item.Id;
             if (!itemId) {
-                var pending;
-                try {
-                    pending = JSON.parse(localStorage.getItem(pendingKey));
-                } catch (err) {
-                    pending = null;
-                }
-                var rememberedItemId = pending && pending.itemId || getRememberedPlaybackItemId();
+                var rememberedItemId = getRememberedPlaybackItemId();
                 if (rememberedItemId) {
                     renderOsdSegments(rememberedItemId);
                     tryPendingSegment(rememberedItemId);
@@ -854,10 +837,10 @@
         }
         activeSegment = null;
         markStartMs = null;
+        pendingSegmentLaunch = null;
         playCooldown = Date.now() + 2000;
         currentPlaybackItemId = null;
         localStorage.removeItem(rememberedItemKey);
-        localStorage.removeItem(pendingKey);
     }
 
     function injectStyle() {
