@@ -71,6 +71,7 @@ if idx > 0:
         open('${ITEM_HTML}','w').write(html)
         print('==> Segment container injected into item.html')
 "
+fi
 
 rm -f "${TMP_JS}"
 echo "==> Starting Emby Server..."
