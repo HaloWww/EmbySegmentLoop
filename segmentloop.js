@@ -477,9 +477,7 @@
         if (playButton) {
             segmentLaunchInProgress = true;
             playButton.click();
-            setTimeout(function () {
-                segmentLaunchInProgress = false;
-            }, 2000);
+            segmentLaunchInProgress = false;
         } else {
             showToast('未找到播放按钮');
         }
