@@ -684,6 +684,7 @@
     }
 
     function tryAnyPendingSegment() {
+        if (Date.now() < playCooldown) return;
         var pending;
         try {
             pending = JSON.parse(localStorage.getItem(pendingKey));
@@ -844,6 +845,8 @@
         });
     }
 
+    var playCooldown = 0;
+
     function onDocumentClick(e) {
         var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay');
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
@@ -851,6 +854,7 @@
         }
         activeSegment = null;
         markStartMs = null;
+        playCooldown = Date.now() + 2000;
         rememberPlaybackItemId(getUrlItemId() || currentPlaybackItemId);
         localStorage.removeItem(pendingKey);
     }
