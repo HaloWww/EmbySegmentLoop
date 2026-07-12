@@ -542,12 +542,12 @@
         var currentUrl = location.href;
 
         if (!buttons || !itemId) {
-            // Don't cancel the running timer – just let it tick. Otherwise
-            // frequent renderAll() calls (from Emby's DOM churn) keep
-            // resetting it and the retry never fires.
             if (!detailRetryTimer && (itemId || /[?&]id=/.test(currentUrl))) {
                 if (currentUrl !== lastDetailUrl) { lastDetailUrl = currentUrl; }
-                detailRetryTimer = setTimeout(renderDetailSegments, 500);
+                detailRetryTimer = setTimeout(function () {
+                    detailRetryTimer = null;
+                    renderDetailSegments();
+                }, 500);
             }
             return;
         }
