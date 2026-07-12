@@ -205,9 +205,17 @@
     }
 
     function getUrlItemId() {
+        // 1. Check URL query/hash
         var text = location.href;
-        var match = text.match(/[?&#](?:id|itemid|itemId)=([^&#]+)/);
-        return match ? decodeURIComponent(match[1]) : null;
+        var match = text.match(/[?&#\/](?:id|itemid|itemId)=([^&#]+)/);
+        if (match) return decodeURIComponent(match[1]);
+        // 2. Check data attributes on detail page
+        var el = document.querySelector('.itemView[data-itemid], [data-itemid]');
+        if (el) return el.getAttribute('data-itemid');
+        // 3. Look for an img whose src contains /Items/{id}/
+        var img = document.querySelector('.detailImageContainer img[src*="/Items/"]');
+        if (img) { match = img.src.match(/\/Items\/([^\/]+)/); if (match) return match[1]; }
+        return null;
     }
 
     function isRendered(element) {
