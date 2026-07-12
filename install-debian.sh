@@ -60,8 +60,11 @@ echo "==> Starting Emby Server..."
 systemctl start emby-server
 
 sleep 3
+DLL_VER=$(strings "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" 2>/dev/null | grep -m1 -oP '\d+\.\d+\.\d+\.\d+' || echo "unknown")
 echo ""
 echo "============================================"
 echo "  Segment Loop installed successfully."
+echo "  Version: ${DLL_VER}"
+echo "  DLL: $(ls -lh "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" | awk '{print $5}')  $(date -r "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" '+%Y-%m-%d %H:%M:%S')"
 echo "  Ctrl+F5 refresh Emby Web to activate."
 echo "============================================"
