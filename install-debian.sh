@@ -8,7 +8,7 @@ set -e
 
 RAW_BASE="https://raw.githubusercontent.com/HaloWww/EmbySegmentLoop/main"
 PLUGIN_DLL="${RAW_BASE}/release/Emby.Plugins.SegmentLoop.dll"
-SEGLOOP_JS="${RAW_BASE}/segmentloop.js"
+SEGLOOP_JS="${RAW_BASE}/segmentloop.js?t=$(date +%s)"
 
 SYSTEM_DIR="/opt/emby-server/system"
 DASHBOARD_DIR="${SYSTEM_DIR}/dashboard-ui"
