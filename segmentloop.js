@@ -473,13 +473,23 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
-        var playButton = document.querySelector('.btnResume:not(.hide), .btnMainPlay:not(.hide), .btnPlay:not(.hide)');
-        if (playButton) {
-            segmentLaunchInProgress = true;
-            playButton.click();
-            segmentLaunchInProgress = false;
+        if (window.ApiClient) {
+            ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(function (item) {
+                getPlaybackManager().then(function (playbackManager) {
+                    if (playbackManager && playbackManager.play) {
+                        playbackManager.play({
+                            items: [item],
+                            startPositionTicks: segment.startMs * 10000
+                        });
+                    }
+                });
+            }).catch(function () {
+                showToast('启动播放失败');
+                pendingSegmentLaunch = null;
+            });
         } else {
-            showToast('未找到播放按钮');
+            showToast('API未就绪');
+            pendingSegmentLaunch = null;
         }
     }
 
