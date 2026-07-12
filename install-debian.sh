@@ -53,25 +53,7 @@ else
     exit 1
 fi
 
-# Inject static segment container into Emby's item (detail page) template.
-# This ensures the container exists in every detail page view (fresh or cached).
-ITEM_HTML="${DASHBOARD_DIR}/item/item.html"
-if [ -f "${ITEM_HTML}" ]; then
-    # Always re-inject – clean up previous versions first
-    python3 -c "
-import re
-html = open('${ITEM_HTML}').read()
-html = re.sub(r'<div\s+class=\"embySegmentDetailList[^>]*>.*?</div>\s*', '', html, flags=re.DOTALL)
-idx = html.find('mainDetailButtons')
-if idx > 0:
-    closeDiv = html.find('</div>', idx)
-    if closeDiv > 0:
-        insert = '\n<div class=\"embySegmentDetailList verticalFieldItem detail-lineItem hide\"><div class=\"embySegmentTitle\">循环片段</div></div>'
-        html = html[:closeDiv+6] + insert + html[closeDiv+6:]
-        open('${ITEM_HTML}','w').write(html)
-        print('==> Segment container injected into item.html')
-"
-fi
+
 
 rm -f "${TMP_JS}"
 echo "==> Starting Emby Server..."

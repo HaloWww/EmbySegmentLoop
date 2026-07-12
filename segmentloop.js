@@ -125,11 +125,10 @@
     }
 
     function ensureItemLoaded(itemId) {
-        if (!itemId || loadedServerItems[itemId]) { console.log('[SegLoop] ensureItemLoaded: skip itemId=' + itemId + ' already=' + !!loadedServerItems[itemId]); return Promise.resolve(); }
-        if (loadingServerItems[itemId]) { console.log('[SegLoop] ensureItemLoaded: pending itemId=' + itemId); return loadingServerItems[itemId]; }
+        if (!itemId || loadedServerItems[itemId]) return Promise.resolve();
+        if (loadingServerItems[itemId]) return loadingServerItems[itemId];
         var url = segmentApiUrl(itemId);
         if (!url) return Promise.resolve();
-        console.log('[SegLoop] ensureItemLoaded: loading itemId=' + itemId);
         var localSegments = getItemSegments(itemId);
         loadingServerItems[itemId] = ApiClient.getJSON(url).then(function (serverSegments) {
             serverSegments = (Array.isArray(serverSegments) ? serverSegments : []).map(normalizeServerSegment);
@@ -543,18 +542,21 @@
     }
 
     function renderDetailSegments() {
+        var buttons = document.querySelector('.mainDetailButtons');
+        if (!buttons) return;
         var itemId = getUrlItemId();
+        if (!itemId) return;
         var host = document.querySelector('.embySegmentDetailList');
-        if (!host) { console.log('[SegLoop] renderDetail: no host'); return; }
-        if (!host.offsetParent && !host.getClientRects().length) { console.log('[SegLoop] renderDetail: host hidden'); return; }
-        if (!itemId) { console.log('[SegLoop] renderDetail: no itemId, href=' + location.href.substring(location.href.indexOf('#!'))); return; }
-        console.log('[SegLoop] renderDetail: itemId=' + itemId + ' hostFound=1');
+        if (!host) {
+            host = document.createElement('div');
+            host.className = 'embySegmentDetailList verticalFieldItem detail-lineItem';
+            buttons.parentNode.insertBefore(host, buttons.nextSibling);
+        }
+        if (host.dataset.rendered === itemId) return;
+        host.dataset.rendered = itemId;
         ensureItemLoaded(itemId).then(function () {
             var segments = getItemSegments(itemId);
-            console.log('[SegLoop] renderDetail: loaded itemId=' + itemId + ' count=' + segments.length + ' display=' + host.style.display);
             if (!segments.length) return;
-            host.classList.remove('hide');
-            host.style.display = '';
             host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
         var rows = document.createElement('div');
         rows.className = 'embySegmentRows focuscontainer-x';
