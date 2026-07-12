@@ -542,17 +542,13 @@
     }
 
     function renderDetailSegments() {
-        var buttons = document.querySelector('.mainDetailButtons');
         var itemId = getUrlItemId();
-        if (!buttons || !itemId) return;
-        ensureItemLoaded(itemId);
+        if (!itemId) return;
         var host = document.querySelector('.embySegmentDetailList');
-        if (!host) {
-            host = document.createElement('div');
-            host.className = 'embySegmentDetailList verticalFieldItem detail-lineItem';
-            buttons.parentNode.insertBefore(host, buttons.nextSibling);
-        }
+        if (!host) return;
         var segments = getItemSegments(itemId);
+        if (!segments.length) return;
+        host.style.display = '';
         host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
         var rows = document.createElement('div');
         rows.className = 'embySegmentRows focuscontainer-x';

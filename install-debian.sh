@@ -37,8 +37,6 @@ if [ -f "${INDEX_HTML}" ]; then
     sed -i '/<!-- SegmentLoop -->/,/\/script>/d' "${INDEX_HTML}" 2>/dev/null || true
 
     if ! grep -q "${MARKER}" "${INDEX_HTML}"; then
-        # We use a Python helper because the JS content contains
-        # characters that break sed/awk.
         python3 -c "
 html = open('${INDEX_HTML}').read()
 js   = open('${TMP_JS}').read()
@@ -53,6 +51,28 @@ open('${INDEX_HTML}','w').write(html.replace('</body>', inj + '</body>'))
 else
     echo "!! index.html not found"
     exit 1
+fi
+
+# Inject static segment container into Emby's item (detail page) template.
+# This ensures the container exists in every detail page view (fresh or cached).
+ITEM_HTML="${DASHBOARD_DIR}/item/item.html"
+if [ -f "${ITEM_HTML}" ]; then
+    if ! grep -q 'embySegmentDetailList' "${ITEM_HTML}"; then
+        python3 -c "
+html = open('${ITEM_HTML}').read()
+# Find the closing </div> right after the mainDetailButtons section
+# and insert our static container before the next element starts.
+marker = 'detail-lineItem\"'
+idx = html.find(marker)
+if idx > 0:
+    closeDiv = html.find('</div>', idx)
+    if closeDiv > 0:
+        insert = '\n                            <div class=\"embySegmentDetailList verticalFieldItem detail-lineItem\" style=\"display:none\"><div class=\"embySegmentTitle\">\u5faa\u73af\u7247\u6bb5</div></div>'
+        html = html[:closeDiv+6] + insert + html[closeDiv+6:]
+        open('${ITEM_HTML}','w').write(html)
+        print('==> Segment container injected into item.html')
+"
+    fi
 fi
 
 rm -f "${TMP_JS}"
