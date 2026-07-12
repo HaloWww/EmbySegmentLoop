@@ -829,7 +829,7 @@
     }
 
     function onDocumentClick(e) {
-        var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, [data-action="play"], .cardOverlayButton-fab, .cardOverlayFab-primary');
+        var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, .cardOverlayButton-fab, .cardOverlayFab-primary, [data-action="play"], [data-action="resume"], [data-action="playallfromhere"], [data-action="playallfromhereandshuffle"]');
         console.log('[SegLoop] click', { btn: !!playButton, inUI: !!(playButton && playButton.closest('.embySegmentDetailList')), launch: segmentLaunchInProgress, pending: !!pendingSegmentLaunch, active: !!activeSegment });
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
