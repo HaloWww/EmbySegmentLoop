@@ -946,6 +946,8 @@
     setInterval(renderPlaybackSegments, 1500);
     setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
-    setInterval(function () { if (/[?&]id=/.test(location.href)) renderDetailSegments(); }, 2000);
+    setInterval(function () {
+        if (document.querySelector('.mainDetailButtons, .itemView') && getUrlItemId()) renderDetailSegments();
+    }, 2000);
     renderAll();
 }());
