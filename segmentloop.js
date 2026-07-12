@@ -533,22 +533,25 @@
         }
     }
 
-    var detailRetries = 0;
+    var detailRetryTimer = null;
+    var lastDetailUrl = '';
 
     function renderDetailSegments() {
         var buttons = document.querySelector('.mainDetailButtons');
         var itemId = getUrlItemId();
+        var currentUrl = location.href;
 
         if (!buttons || !itemId) {
-            // Emby's detail page may still be rendering – retry a few times.
-            if (detailRetries < 8) {
-                detailRetries++;
-                setTimeout(renderDetailSegments, 400);
+            clearTimeout(detailRetryTimer);
+            // Only retry if we appear to be on a detail page
+            if (itemId || /[?&]id=/.test(currentUrl)) {
+                // Reset retry counter when URL changes (user navigated to new item)
+                if (currentUrl !== lastDetailUrl) { lastDetailUrl = currentUrl; }
+                detailRetryTimer = setTimeout(renderDetailSegments, 500);
             }
             return;
         }
-        // Reset retry counter once we succeed or the user navigates away
-        if (detailRetries > 0) detailRetries = 0;
+        lastDetailUrl = currentUrl;
         ensureItemLoaded(itemId);
         var host = document.querySelector('.embySegmentDetailList');
         if (!host) {
