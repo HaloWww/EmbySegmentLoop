@@ -848,7 +848,7 @@
     var playCooldown = 0;
 
     function onDocumentClick(e) {
-        var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay');
+        var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, [data-action="play"], .cardOverlayButton-fab, .cardOverlayFab-primary');
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
         }
