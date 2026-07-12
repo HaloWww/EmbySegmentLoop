@@ -828,15 +828,9 @@
     }
 
     function onDocumentClick(e) {
-        var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, .cardOverlayButton-fab, .cardOverlayFab-primary, [data-action="play"], [data-action="resume"], [data-action="playallfromhere"], [data-action="playallfromhereandshuffle"]');
+        var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, .cardOverlayButton-fab, .cardOverlayFab-primary, [data-action="play"], [data-action="resume"], [data-action="playallfromhere"]');
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
-        }
-        if (playButton.getAttribute('data-mode') === 'resume') {
-            playButton.setAttribute('data-mode', 'play');
-        }
-        if (playButton.getAttribute('data-action') === 'resume' || playButton.getAttribute('data-action') === 'play') {
-            playButton.setAttribute('data-action', 'playfrombeginning');
         }
         activeSegment = null;
         markStartMs = null;
