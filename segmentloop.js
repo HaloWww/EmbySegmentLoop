@@ -949,7 +949,20 @@
     setInterval(function () {
         if (document.querySelector('.mainDetailButtons, .itemView') && getUrlItemId()) renderDetailSegments();
     }, 2000);
-    window.addEventListener('hashchange', function () { setTimeout(renderDetailSegments, 300); });
-    window.addEventListener('popstate', function () { setTimeout(renderDetailSegments, 300); });
+    window.addEventListener('hashchange', function () {
+        // Emby detail page loads async – retry several times
+        var tries = 0;
+        function tryRender() {
+            if (tries > 6) return;
+            tries++;
+            if (document.querySelector('.mainDetailButtons') && getUrlItemId()) {
+                renderDetailSegments();
+            } else {
+                setTimeout(tryRender, 500);
+            }
+        }
+        setTimeout(tryRender, 500);
+    });
+    window.addEventListener('popstate', function () { setTimeout(renderDetailSegments, 500); });
     renderAll();
 }());
