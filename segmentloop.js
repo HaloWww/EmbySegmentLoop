@@ -473,28 +473,18 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
-        if (window.ApiClient) {
-            ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(function (item) {
-                getPlaybackManager().then(function (playbackManager) {
-                    if (playbackManager && playbackManager.play) {
-                        playbackManager.play({
-                            items: [item],
-                            startPositionTicks: segment.startMs * 10000
-                        });
-                    }
-                });
-            }).catch(function () {
-                showToast('启动播放失败');
-                pendingSegmentLaunch = null;
-            });
+        var playButton = document.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
+        if (!playButton) playButton = document.querySelector('.btnResume:not(.hide)');
+        if (playButton) {
+            segmentLaunchInProgress = true;
+            playButton.click();
+            segmentLaunchInProgress = false;
         } else {
-            showToast('API未就绪');
-            pendingSegmentLaunch = null;
+            showToast('未找到播放按钮');
         }
     }
 
     function activateSegment(itemId, segment) {
-        console.log('[SegLoop] activateSegment', itemId, segment && segment.name);
         var video = getVideo();
         if (!video) {
             return;
@@ -692,7 +682,6 @@
 
     function tryAnyPendingSegment() {
         if (!pendingSegmentLaunch) return;
-        console.log('[SegLoop] tryAnyPending', pendingSegmentLaunch.itemId, pendingSegmentLaunch.segmentId);
         tryPendingSegment(pendingSegmentLaunch.itemId);
     }
 
@@ -840,11 +829,23 @@
 
     function onDocumentClick(e) {
         var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, .cardOverlayButton-fab, .cardOverlayFab-primary, [data-action="play"], [data-action="resume"], [data-action="playallfromhere"], [data-action="playallfromhereandshuffle"]');
-        console.log('[SegLoop] click', { btn: !!playButton, inUI: !!(playButton && playButton.closest('.embySegmentDetailList')), launch: segmentLaunchInProgress, pending: !!pendingSegmentLaunch, active: !!activeSegment });
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
         }
-        console.log('[SegLoop] CLEAR via play click');
+        if (playButton.getAttribute('data-action') === 'resume') {
+            playButton.setAttribute('data-action', 'play');
+        }
+        var card = playButton.closest('[data-id]');
+        if (card && window.ApiClient) {
+            var itemId = card.getAttribute('data-id');
+            if (itemId) {
+                ApiClient.getCurrentUser().then(function (user) {
+                    if (user && user.Id) {
+                        ApiClient.ajax({ type:'POST', url: ApiClient.getUrl('Users/' + user.Id + '/Items/' + itemId + '/UserData'), data: JSON.stringify({ PlaybackPositionTicks: 0 }), contentType: 'application/json' }).catch(function () {});
+                    }
+                }).catch(function () {});
+            }
+        }
         activeSegment = null;
         markStartMs = null;
         pendingSegmentLaunch = null;
