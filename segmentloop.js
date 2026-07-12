@@ -664,7 +664,7 @@
     }
 
     function tryPendingSegment(itemId) {
-        if (!itemId) {
+        if (!itemId || Date.now() < playCooldown) {
             return;
         }
         var pending;
@@ -855,7 +855,8 @@
         activeSegment = null;
         markStartMs = null;
         playCooldown = Date.now() + 2000;
-        rememberPlaybackItemId(getUrlItemId() || currentPlaybackItemId);
+        currentPlaybackItemId = null;
+        localStorage.removeItem(rememberedItemKey);
         localStorage.removeItem(pendingKey);
     }
 
