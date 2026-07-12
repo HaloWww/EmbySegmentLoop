@@ -41,7 +41,7 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
 
             var injection = marker + Environment.NewLine +
                 "<script>" + Environment.NewLine +
-                "window.EmbySegmentLoopConfig = { startKey: '[', endKey: ']' };" + Environment.NewLine +
+                "window.EmbySegmentLoopConfig = { startKey: '[', endKey: ']', captureKey: 'P' };" + Environment.NewLine +
                 js + Environment.NewLine +
                 "</script>" + Environment.NewLine;
 

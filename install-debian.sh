@@ -42,7 +42,7 @@ if [ -f "${INDEX_HTML}" ]; then
         python3 -c "
 html = open('${INDEX_HTML}').read()
 js   = open('${TMP_JS}').read()
-inj  = '${MARKER}\n<script>\nwindow.EmbySegmentLoopConfig={startKey:\"[\",endKey:\"]\"};\n' + js + '\n</script>\n'
+inj  = '${MARKER}\n<script>\nwindow.EmbySegmentLoopConfig={startKey:\"[\",endKey:\"]\",captureKey:\"P\"};\n' + js + '\n</script>\n'
 open('${INDEX_HTML}','w').write(html.replace('</body>', inj + '</body>'))
 "
         echo "==> Script injected inline into index.html"

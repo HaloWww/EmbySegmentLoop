@@ -45,7 +45,8 @@
         var config = window.EmbySegmentLoopConfig || {};
         return {
             startKey: config.startKey || '[',
-            endKey: config.endKey || ']'
+            endKey: config.endKey || ']',
+            captureKey: config.captureKey || 'P'
         };
     }
 
@@ -720,6 +721,44 @@
         });
     }
 
+    function capturePoster(video) {
+        try {
+            var canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth || 1920;
+            canvas.height = video.videoHeight || 1080;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(function (blob) {
+                if (!blob) { showToast('\u622a\u56fe\u5931\u8d25'); return; }
+                var file = new File([blob], 'poster.jpg', { type: 'image/jpeg' });
+                getCurrentPlaybackItem().then(function (item) {
+                    var itemId = item && item.Id || getRememberedPlaybackItemId();
+                    if (!itemId) { showToast('\u65e0\u6cd5\u8bc6\u522b\u89c6\u9891'); return; }
+                    var apiClient = null;
+                    if (typeof ApiClient !== 'undefined') apiClient = ApiClient;
+                    else if (window.require) {
+                        require(['connectionManager'], function (cm) {
+                            var conn = cm.default || cm;
+                            var api = conn.getApiClient(item);
+                            doUpload(api, itemId, file);
+                        });
+                        return;
+                    }
+                    if (apiClient) doUpload(apiClient, itemId, file);
+                    else showToast('\u65e0\u6cd5\u83b7\u53d6 API \u5ba2\u6237\u7aef');
+                });
+            }, 'image/jpeg', 0.92);
+        } catch(e) { showToast('\u622a\u56fe\u5931\u8d25: ' + e.message); }
+    }
+
+    function doUpload(apiClient, itemId, file) {
+        apiClient.uploadItemImage(itemId, 'Primary', null, file).then(function () {
+            showToast('\u6d77\u62a5\u5df2\u66f4\u65b0\uff0c\u5237\u65b0\u9875\u9762\u67e5\u770b');
+        }).catch(function () {
+            showToast('\u4e0a\u4f20\u5931\u8d25\uff0c\u8bf7\u786e\u8ba4\u6709\u7f16\u8f91\u6761\u76ee\u56fe\u7247\u7684\u6743\u9650');
+        });
+    }
+
     function onKeyDown(e) {
         var target = e.target;
         if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) {
@@ -730,10 +769,18 @@
             return;
         }
         var settings = getShortcutSettings();
-        if (e.key !== settings.startKey && e.key !== settings.endKey) {
+        var isCaptureKey = e.key === settings.captureKey || (e.key && e.key.toLowerCase && e.key.toLowerCase() === settings.captureKey.toLowerCase());
+        var isStartEnd = e.key === settings.startKey || e.key === settings.endKey;
+
+        if (!isStartEnd && !isCaptureKey) {
             return;
         }
         e.preventDefault();
+
+        if (isCaptureKey) {
+            capturePoster(video);
+            return;
+        }
         getCurrentPlaybackItem().then(function (item) {
             var itemId = item && item.Id || getRememberedPlaybackItemId() || (activeSegment && activeSegment.itemId);
             if (!itemId) {
