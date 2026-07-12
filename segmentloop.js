@@ -835,8 +835,8 @@
         if (playButton.getAttribute('data-mode') === 'resume') {
             playButton.setAttribute('data-mode', 'play');
         }
-        if (playButton.getAttribute('data-action') === 'resume') {
-            playButton.setAttribute('data-action', 'play');
+        if (playButton.getAttribute('data-action') === 'resume' || playButton.getAttribute('data-action') === 'play') {
+            playButton.setAttribute('data-action', 'playfrombeginning');
         }
         activeSegment = null;
         markStartMs = null;
