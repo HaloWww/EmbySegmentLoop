@@ -950,7 +950,6 @@
         if (document.querySelector('.mainDetailButtons, .itemView') && getUrlItemId()) renderDetailSegments();
     }, 2000);
     window.addEventListener('hashchange', function () {
-        // Emby detail page loads async – retry several times
         var tries = 0;
         function tryRender() {
             if (tries > 6) return;
@@ -964,5 +963,24 @@
         setTimeout(tryRender, 500);
     });
     window.addEventListener('popstate', function () { setTimeout(renderDetailSegments, 500); });
+
+    // Emby uses history.pushState which does NOT fire hashchange.
+    // We also intercept pushState to detect SPA navigations.
+    var _pushState = history.pushState;
+    history.pushState = function () {
+        _pushState.apply(this, arguments);
+        var tries = 0;
+        function tryRender() {
+            if (tries > 8) return;
+            tries++;
+            if (document.querySelector('.mainDetailButtons') && getUrlItemId()) {
+                renderDetailSegments();
+            } else {
+                setTimeout(tryRender, 600);
+            }
+        }
+        setTimeout(tryRender, 600);
+    };
+
     renderAll();
 }());
