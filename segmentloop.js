@@ -555,9 +555,9 @@
         if (host.dataset.rendered === itemId) return;
         host.dataset.rendered = itemId;
         ensureItemLoaded(itemId).then(function () {
-            var segments = getItemSegments(itemId);
-            if (!segments.length) return;
-            host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
+        var segments = getItemSegments(itemId);
+        if (!segments.length) return;
+        host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
         var rows = document.createElement('div');
         rows.className = 'embySegmentRows focuscontainer-x';
         segments.forEach(function (segment) {
