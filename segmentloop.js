@@ -125,10 +125,11 @@
     }
 
     function ensureItemLoaded(itemId) {
-        if (!itemId || loadedServerItems[itemId]) return Promise.resolve();
-        if (loadingServerItems[itemId]) return loadingServerItems[itemId];
+        if (!itemId || loadedServerItems[itemId]) { console.log('[SegLoop] ensureItemLoaded: skip itemId=' + itemId + ' already=' + !!loadedServerItems[itemId]); return Promise.resolve(); }
+        if (loadingServerItems[itemId]) { console.log('[SegLoop] ensureItemLoaded: pending itemId=' + itemId); return loadingServerItems[itemId]; }
         var url = segmentApiUrl(itemId);
         if (!url) return Promise.resolve();
+        console.log('[SegLoop] ensureItemLoaded: loading itemId=' + itemId);
         var localSegments = getItemSegments(itemId);
         loadingServerItems[itemId] = ApiClient.getJSON(url).then(function (serverSegments) {
             serverSegments = (Array.isArray(serverSegments) ? serverSegments : []).map(normalizeServerSegment);
@@ -543,11 +544,13 @@
 
     function renderDetailSegments() {
         var itemId = getUrlItemId();
-        if (!itemId) return;
         var host = document.querySelector('.embySegmentDetailList');
-        if (!host) return;
+        if (!host) { console.log('[SegLoop] renderDetail: no host'); return; }
+        if (!itemId) { console.log('[SegLoop] renderDetail: no itemId, href=' + location.href.substring(location.href.indexOf('#!'))); return; }
+        console.log('[SegLoop] renderDetail: itemId=' + itemId + ' hostFound=1');
         ensureItemLoaded(itemId).then(function () {
             var segments = getItemSegments(itemId);
+            console.log('[SegLoop] renderDetail: loaded itemId=' + itemId + ' count=' + segments.length);
             if (!segments.length) return;
             host.style.display = '';
             host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
