@@ -832,19 +832,8 @@
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
         }
-        if (playButton.getAttribute('data-action') === 'resume') {
-            playButton.setAttribute('data-action', 'play');
-        }
-        var card = playButton.closest('[data-id]');
-        if (card && window.ApiClient) {
-            var itemId = card.getAttribute('data-id');
-            if (itemId) {
-                ApiClient.getCurrentUser().then(function (user) {
-                    if (user && user.Id) {
-                        ApiClient.ajax({ type:'POST', url: ApiClient.getUrl('Users/' + user.Id + '/Items/' + itemId + '/UserData'), data: JSON.stringify({ PlaybackPositionTicks: 0 }), contentType: 'application/json' }).catch(function () {});
-                    }
-                }).catch(function () {});
-            }
+        if (playButton.getAttribute('data-mode') === 'resume') {
+            playButton.setAttribute('data-mode', 'play');
         }
         activeSegment = null;
         markStartMs = null;
