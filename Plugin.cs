@@ -6,7 +6,7 @@ using MediaBrowser.Model.Serialization;
 
 namespace Emby.Plugins.SegmentLoop;
 
-public sealed class Plugin : BasePlugin<PluginConfiguration>
+public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     public static readonly Guid PluginId = Guid.Parse("8c1e7ca2-3f07-4b62-a4d1-929f07509367");
 
@@ -21,11 +21,8 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>
     }
 
     public static Plugin? Instance { get; private set; }
-
     public override string Name => "Segment Loop";
-
-    public override string Description => "Adds video segment capture and loop playback controls to the Emby web client.";
-
+    public override string Description => "Video segment capture and loop playback.";
     public override Guid Id => PluginId;
 
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
@@ -44,13 +41,26 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>
             : Environment.ExpandEnvironmentVariables(configuration.StoragePath.Trim());
         SegmentRepository.Configure(Path.GetFullPath(path));
     }
+
+    public IEnumerable<PluginPageInfo> GetPages()
+    {
+        return new[]
+        {
+            new PluginPageInfo
+            {
+                Name = "segmentloop",
+                EmbeddedResourcePath = GetType().Namespace + ".config.html",
+                EnableInMainMenu = false,
+                DisplayName = "Segment Loop"
+            }
+        };
+    }
 }
 
 public sealed class PluginConfiguration : BasePluginConfiguration
 {
     public string StartKey { get; set; } = "[";
-
     public string EndKey { get; set; } = "]";
-
+    public string CaptureKey { get; set; } = "P";
     public string StoragePath { get; set; } = string.Empty;
 }

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head><title>Segment Loop</title></head>
+<body>
+<div data-role="page" class="page type-interior pluginConfigurationPage segmentLoopConfigPage" data-require="emby-input,emby-button">
+    <div data-role="content">
+        <div class="content-primary">
+            <form class="segmentLoopForm">
+                <h2 style="margin:0 0 1.2rem">Segment Loop</h2>
+
+                <div class="inputContainer">
+                    <input is="emby-input" id="slStart" label="Start Key" value="[" />
+                    <div class="fieldDescription">Default: [</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" id="slEnd" label="End Key" value="]" />
+                    <div class="fieldDescription">Default: ]</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" id="slCapture" label="Capture Poster Key" value="P" />
+                    <div class="fieldDescription">Press this key during playback to capture a poster frame.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" id="slPath" label="DB Path" />
+                    <div class="fieldDescription">Leave empty to use default path.</div>
+                </div>
+
+                <button is="emby-button" type="button" class="raised button-submit block btnSave">
+                    <span>Save</span>
+                </button>
+            </form>
+        </div>
+    </div>
+    <script>
+    (function () {
+        var pid = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
+        var page = document.querySelector('.segmentLoopConfigPage');
+        if (!page || page.dataset.inited) return;
+        page.dataset.inited = '1';
+
+        function loading(show) {
+            if (typeof Dashboard !== 'undefined') {
+                if (show) Dashboard.showLoadingMsg(); else Dashboard.hideLoadingMsg();
+            }
+        }
+        ApiClient.getPluginConfiguration(pid).then(function (cfg) {
+            page.querySelector('#slStart').value = cfg.StartKey || '[';
+            page.querySelector('#slEnd').value = cfg.EndKey || ']';
+            page.querySelector('#slCapture').value = cfg.CaptureKey || 'P';
+            var sp = page.querySelector('#slPath');
+            if (sp && cfg.StoragePath != null) sp.value = cfg.StoragePath;
+        });
+        page.querySelector('.btnSave').addEventListener('click', function () {
+            loading(true);
+            ApiClient.getPluginConfiguration(pid).then(function (cfg) {
+                cfg.StartKey = page.querySelector('#slStart').value || '[';
+                cfg.EndKey = page.querySelector('#slEnd').value || ']';
+                cfg.CaptureKey = page.querySelector('#slCapture').value || 'P';
+                var sp = page.querySelector('#slPath');
+                cfg.StoragePath = (sp && sp.value) || '';
+                return ApiClient.updatePluginConfiguration(pid, cfg);
+            }).then(function () {
+                loading(false);
+                if (typeof Dashboard !== 'undefined' && Dashboard.alert)
+                    Dashboard.alert('Saved. Refresh Emby Web to apply.');
+            });
+        });
+    })();
+    </script>
+</div>
+</body>
+</html>

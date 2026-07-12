@@ -27,5 +27,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="segmentloop.js" />
+    <EmbeddedResource Include="config.html" />
   </ItemGroup>
 </Project>
