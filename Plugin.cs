@@ -1,6 +1,9 @@
+using System.Reflection;
+using System.Text;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
@@ -25,6 +28,22 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override string Description => "Video segment capture and loop playback.";
     public override Guid Id => PluginId;
 
+    public IEnumerable<PluginPageInfo> GetPages()
+    {
+        return new[]
+        {
+            new PluginPageInfo
+            {
+                Name = "segmentloop",
+                EmbeddedResourcePath = GetType().Namespace + ".config.html",
+                EnableInMainMenu = true,
+                MenuSection = "server",
+                MenuIcon = "repeat",
+                DisplayName = "Segment Loop"
+            }
+        };
+    }
+
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
         base.UpdateConfiguration(configuration);
@@ -42,21 +61,6 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         SegmentRepository.Configure(Path.GetFullPath(path));
     }
 
-    public IEnumerable<PluginPageInfo> GetPages()
-    {
-        return new[]
-        {
-            new PluginPageInfo
-            {
-                Name = "segmentloop",
-                EmbeddedResourcePath = GetType().Namespace + ".config.html",
-                EnableInMainMenu = true,
-                MenuSection = "server",
-                MenuIcon = "repeat",
-                DisplayName = "Segment Loop"
-            }
-        };
-    }
 }
 
 public sealed class PluginConfiguration : BasePluginConfiguration
