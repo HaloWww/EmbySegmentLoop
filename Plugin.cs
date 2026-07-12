@@ -50,7 +50,9 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             {
                 Name = "segmentloop",
                 EmbeddedResourcePath = GetType().Namespace + ".config.html",
-                EnableInMainMenu = false,
+                EnableInMainMenu = true,
+                MenuSection = "server",
+                MenuIcon = "repeat",
                 DisplayName = "Segment Loop"
             }
         };
