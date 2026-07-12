@@ -484,6 +484,7 @@
     }
 
     function activateSegment(itemId, segment) {
+        console.log('[SegLoop] activateSegment', itemId, segment && segment.name);
         var video = getVideo();
         if (!video) {
             return;
@@ -681,6 +682,7 @@
 
     function tryAnyPendingSegment() {
         if (!pendingSegmentLaunch) return;
+        console.log('[SegLoop] tryAnyPending', pendingSegmentLaunch.itemId, pendingSegmentLaunch.segmentId);
         tryPendingSegment(pendingSegmentLaunch.itemId);
     }
 
@@ -826,17 +828,16 @@
         });
     }
 
-    var playCooldown = 0;
-
     function onDocumentClick(e) {
         var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, [data-action="play"], .cardOverlayButton-fab, .cardOverlayFab-primary');
+        console.log('[SegLoop] click', { btn: !!playButton, inUI: !!(playButton && playButton.closest('.embySegmentDetailList')), launch: segmentLaunchInProgress, pending: !!pendingSegmentLaunch, active: !!activeSegment });
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
         }
+        console.log('[SegLoop] CLEAR via play click');
         activeSegment = null;
         markStartMs = null;
         pendingSegmentLaunch = null;
-        playCooldown = Date.now() + 2000;
         currentPlaybackItemId = null;
         localStorage.removeItem(rememberedItemKey);
     }
