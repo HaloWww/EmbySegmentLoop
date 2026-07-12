@@ -546,6 +546,7 @@
         if (!itemId) return;
         var host = document.querySelector('.embySegmentDetailList');
         if (!host) return;
+        ensureItemLoaded(itemId);
         var segments = getItemSegments(itemId);
         if (!segments.length) return;
         host.style.display = '';
