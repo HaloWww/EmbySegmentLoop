@@ -685,13 +685,25 @@
         if (!getVideo()) {
             activeSegment = null;
             markStartMs = null;
-            currentPlaybackItemId = null;
+            // Keep currentPlaybackItemId – clearing it here would forget which
+            // video we were watching and prevent OSD buttons from showing when
+            // the user switches to a new video before getCurrentPlaybackItem()
+            // has resolved.
             Array.prototype.slice.call(document.querySelectorAll('.embySegmentOsdList')).forEach(function (host) {
                 host.remove();
             });
             return;
         }
         tryAnyPendingSegment();
+
+        // Show whatever we can IMMEDIATELY while waiting for the async call
+        var quickId = getRememberedPlaybackItemId();
+        if (quickId) {
+            ensureItemLoaded(quickId);
+            renderOsdSegments(quickId);
+            tryPendingSegment(quickId);
+        }
+
         getCurrentPlaybackItem().then(function (item) {
             if (generation !== playbackRenderGeneration || !getVideo()) {
                 return;
@@ -704,9 +716,6 @@
                 } catch (err) {
                     pending = null;
                 }
-                // A pending segment is tied to an explicit click and is therefore
-                // safer than the remembered detail-page id. The latter is only a
-                // short-lived fallback while playbackManager is still initializing.
                 var rememberedItemId = pending && pending.itemId || getRememberedPlaybackItemId();
                 if (rememberedItemId) {
                     renderOsdSegments(rememberedItemId);
@@ -715,6 +724,7 @@
                 return;
             }
             rememberPlaybackItemId(itemId);
+            if (itemId === quickId) return;  // already rendered above
             ensureItemLoaded(itemId);
             renderOsdSegments(itemId);
             tryPendingSegment(itemId);
