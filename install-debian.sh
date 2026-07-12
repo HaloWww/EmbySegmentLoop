@@ -22,7 +22,7 @@ ask() {
     local prompt="$1"
     local default="${2:-N}"
     while true; do
-        read -p "$prompt [y/N] " yn
+        read -p "$prompt [y/N] " yn < /dev/tty
         case "$yn" in
             [Yy]* ) return 0 ;;
             [Nn]* | "" ) return 1 ;;
