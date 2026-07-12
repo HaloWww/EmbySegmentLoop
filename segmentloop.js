@@ -473,15 +473,22 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
-        var playButton = document.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
-        if (!playButton) playButton = document.querySelector('.btnResume:not(.hide)');
-        if (playButton) {
-            segmentLaunchInProgress = true;
-            playButton.click();
-            segmentLaunchInProgress = false;
-        } else {
-            showToast('未找到播放按钮');
-        }
+        getPlaybackManager().then(function (pm) {
+            if (!pm || !pm.play) {
+                var playButton = document.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
+                if (!playButton) playButton = document.querySelector('.btnResume:not(.hide)');
+                if (playButton) {
+                    segmentLaunchInProgress = true;
+                    playButton.click();
+                    segmentLaunchInProgress = false;
+                } else {
+                    showToast('无法启动播放');
+                    pendingSegmentLaunch = null;
+                }
+                return;
+            }
+            pm.play({ items: [{ Id: itemId }] });
+        });
     }
 
     function activateSegment(itemId, segment) {
