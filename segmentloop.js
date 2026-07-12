@@ -937,5 +937,7 @@
     }).observe(document.documentElement, { childList: true, subtree: true });
     setInterval(renderPlaybackSegments, 1500);
     setInterval(onVideoTimeUpdate, 200);
+    // Periodic check for detail pages – catches view restoration (display:none→block)
+    setInterval(function () { if (/[?&]id=/.test(location.href)) renderDetailSegments(); }, 2000);
     renderAll();
 }());
