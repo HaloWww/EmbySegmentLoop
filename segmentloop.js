@@ -473,22 +473,16 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
-        getPlaybackManager().then(function (pm) {
-            if (!pm || !pm.play) {
-                var playButton = document.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
-                if (!playButton) playButton = document.querySelector('.btnResume:not(.hide)');
-                if (playButton) {
-                    segmentLaunchInProgress = true;
-                    playButton.click();
-                    segmentLaunchInProgress = false;
-                } else {
-                    showToast('无法启动播放');
-                    pendingSegmentLaunch = null;
-                }
-                return;
-            }
-            pm.play({ items: [{ Id: itemId }] });
-        });
+        var playButton = document.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
+        if (!playButton) playButton = document.querySelector('.btnResume:not(.hide)');
+        if (playButton) {
+            segmentLaunchInProgress = true;
+            playButton.click();
+            segmentLaunchInProgress = false;
+        } else {
+            showToast('未找到播放按钮');
+            pendingSegmentLaunch = null;
+        }
     }
 
     function activateSegment(itemId, segment) {
@@ -554,50 +548,60 @@
             var b = buttonsList[i];
             var itemId = getUrlItemId();
             if (!itemId) continue;
-            var old = b.parentNode.querySelector('.embySegmentDetailList');
-            if (old) old.remove();
-            var host = document.createElement('div');
-            host.className = 'embySegmentDetailList verticalFieldItem detail-lineItem';
-            b.parentNode.insertBefore(host, b.nextSibling);
-            (function(host, itemId) {
-            ensureItemLoaded(itemId).then(function () {
-                var segments = getItemSegments(itemId);
-                if (!segments.length) return;
-                setTimeout(function () {
-                    host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
-                    var rows = document.createElement('div');
-                    rows.className = 'embySegmentRows focuscontainer-x';
-                    segments.forEach(function (segment) {
-                        var wrap = document.createElement('span');
-                        wrap.className = 'embySegmentChipWrap';
-                        var button = document.createElement('button');
-                        button.type = 'button';
-                        button.className = 'embySegmentChip raised';
-                        button.textContent = segment.name || '未命名片段';
-                        button.title = segmentLabel(segment);
-                        button.onclick = function () { playSegmentFromDetail(itemId, segment); };
-                        var edit = document.createElement('button');
-                        edit.type = 'button';
-                        edit.className = 'embySegmentGear paper-icon-button-light';
-                        edit.title = '编辑片段';
-                        edit.setAttribute('aria-label', '编辑片段');
-                        edit.innerHTML = '<i class="md-icon">more_horiz</i>';
-                        edit.onclick = function () { openEditor(itemId, segment); };
-                        wrap.appendChild(button);
-                        wrap.appendChild(edit);
-                        rows.appendChild(wrap);
-                    });
-                    var add = document.createElement('button');
-                    add.type = 'button';
-                    add.className = 'embySegmentAdd raised';
-                    add.textContent = '编辑片段';
-                    add.onclick = function () { openEditor(itemId); };
-                    rows.appendChild(add);
-                    host.appendChild(rows);
-                }, 0);
-            });
-            })(host, itemId);
+            var parent = b.parentNode;
+            var host = parent.querySelector('.embySegmentDetailList');
+            if (host && host.getAttribute('data-segitem') !== itemId) {
+                host.remove();
+                host = null;
+            }
+            if (!host) {
+                host = document.createElement('div');
+                host.className = 'embySegmentDetailList verticalFieldItem detail-lineItem';
+                host.setAttribute('data-segitem', itemId);
+                parent.insertBefore(host, b.nextSibling);
+            }
+            fillDetailHost(host, itemId);
         }
+    }
+
+    function fillDetailHost(host, itemId) {
+        ensureItemLoaded(itemId).then(function () {
+            if (!host.isConnected || host.getAttribute('data-segitem') !== itemId) return;
+            var segments = getItemSegments(itemId);
+            var key = segments.map(function (s) { return s.id; }).join(',');
+            if (host.getAttribute('data-segkey') === key) return;
+            host.setAttribute('data-segkey', key);
+            host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
+            var rows = document.createElement('div');
+            rows.className = 'embySegmentRows focuscontainer-x';
+            segments.forEach(function (segment) {
+                var wrap = document.createElement('span');
+                wrap.className = 'embySegmentChipWrap';
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'embySegmentChip raised';
+                button.textContent = segment.name || '未命名片段';
+                button.title = segmentLabel(segment);
+                button.onclick = function () { playSegmentFromDetail(itemId, segment); };
+                var edit = document.createElement('button');
+                edit.type = 'button';
+                edit.className = 'embySegmentGear paper-icon-button-light';
+                edit.title = '编辑片段';
+                edit.setAttribute('aria-label', '编辑片段');
+                edit.innerHTML = '<i class="md-icon">more_horiz</i>';
+                edit.onclick = function () { openEditor(itemId, segment); };
+                wrap.appendChild(button);
+                wrap.appendChild(edit);
+                rows.appendChild(wrap);
+            });
+            var add = document.createElement('button');
+            add.type = 'button';
+            add.className = 'embySegmentAdd raised';
+            add.textContent = '编辑片段';
+            add.onclick = function () { openEditor(itemId); };
+            rows.appendChild(add);
+            host.appendChild(rows);
+        });
     }
 
     function renderOsdSegments(itemId) {
@@ -919,6 +923,7 @@
 
     window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
+    document.addEventListener('keydown', onKeyDown);
     new MutationObserver(function () {
         if (isRendering) {
             return;
