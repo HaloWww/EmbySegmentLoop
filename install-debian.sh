@@ -61,10 +61,10 @@ systemctl start emby-server
 
 sleep 3
 DLL_VER=$(wget -q -O - "${RAW_BASE}/release/VERSION" 2>/dev/null || echo "unknown")
+GIT_TIME=$(wget -q -O - "https://api.github.com/repos/HaloWww/EmbySegmentLoop/commits/main" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['commit']['committer']['date'][:19].replace('T',' '))" 2>/dev/null || echo "unknown")
 echo ""
 echo "============================================"
 echo "  Segment Loop installed successfully."
-echo "  Version: ${DLL_VER}"
-echo "  DLL: $(ls -lh "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" | awk '{print $5}')  $(date -r "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" '+%Y-%m-%d %H:%M:%S')"
+echo "  Version: ${DLL_VER}   Released: ${GIT_TIME}"
 echo "  Ctrl+F5 refresh Emby Web to activate."
 echo "============================================"
