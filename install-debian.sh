@@ -65,7 +65,7 @@ idx = html.find('mainDetailButtons')
 if idx > 0:
     closeDiv = html.find('</div>', idx)
     if closeDiv > 0:
-        insert = '\n<div class=\"embySegmentDetailList verticalFieldItem detail-lineItem\" style=\"display:none\"><div class=\"embySegmentTitle\">循环片段</div></div>'
+        insert = '\n<div class=\"embySegmentDetailList verticalFieldItem detail-lineItem hide\"><div class=\"embySegmentTitle\">循环片段</div></div>'
         html = html[:closeDiv+6] + insert + html[closeDiv+6:]
         open('${ITEM_HTML}','w').write(html)
         print('==> Segment container injected into item.html')
