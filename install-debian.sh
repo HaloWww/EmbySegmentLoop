@@ -1,19 +1,16 @@
 #!/bin/bash
 set -e
 # =============================================================================
-# Emby Segment Loop – Debian all-in-one installation script
+# Emby Segment Loop – Debian installation script (interactive)
 # =============================================================================
-# Usage:  sudo bash install-debian.sh [/path/to/emby-server-deb_4.9.5.0_amd64.deb]
-#
-# If the DEB path is provided, the script installs/upgrades Emby first,
-# then applies the linux patches, then installs the Segment Loop plugin.
-# If no DEB path is given, only the plugin is installed.
+# Usage:  sudo bash install-debian.sh
 # =============================================================================
 
 RAW_BASE="https://raw.githubusercontent.com/HaloWww/EmbySegmentLoop/main"
 PLUGIN_DLL="${RAW_BASE}/release/Emby.Plugins.SegmentLoop.dll"
 SEGLOOP_JS="${RAW_BASE}/segmentloop.js"
 LINUX_FILES="${RAW_BASE}/linux-files"
+EMBY_DEB_URL="https://github.com/MediaBrowser/Emby.Releases/releases/download/4.9.5.0/emby-server-deb_4.9.5.0_amd64.deb"
 
 SYSTEM_DIR="/opt/emby-server/system"
 DASHBOARD_DIR="${SYSTEM_DIR}/dashboard-ui"
@@ -21,82 +18,104 @@ PLUGINS_DIR="/var/lib/emby/plugins"
 INDEX_HTML="${DASHBOARD_DIR}/index.html"
 MARKER="<!-- SegmentLoop -->"
 
-DEB_PATH="${1}"
+ask() {
+    local prompt="$1"
+    local default="${2:-N}"
+    while true; do
+        read -p "$prompt [y/N] " yn
+        case "$yn" in
+            [Yy]* ) return 0 ;;
+            [Nn]* | "" ) return 1 ;;
+            * ) echo "Please answer y or n." ;;
+        esac
+    done
+}
 
-# ---- Step 1: Install/upgrade Emby if DEB provided ----
-if [ -n "${DEB_PATH}" ] && [ -f "${DEB_PATH}" ]; then
-    echo "==> Installing/upgrading Emby from ${DEB_PATH}..."
-    dpkg -i "${DEB_PATH}" || apt-get install -f -y
+# ---- Step 1: Install/upgrade Emby ----
+if ask "Install/upgrade Emby Server 4.9.5.0 DEB package?"; then
+    echo "==> Downloading Emby DEB..."
+    TMP_DEB=$(mktemp /tmp/emby-XXXXXX.deb)
+    wget -q --show-progress -O "${TMP_DEB}" "${EMBY_DEB_URL}"
+    echo "==> Installing Emby..."
+    dpkg -i "${TMP_DEB}" || apt-get install -f -y
+    rm -f "${TMP_DEB}"
 fi
 
 # ---- Step 2: Apply linux patches ----
-if [ -d "${SYSTEM_DIR}" ]; then
-    echo "==> Applying linux system patches..."
-    TMP_LINUX=$(mktemp -d)
+if ask "Apply linux system patches?"; then
+    if [ -d "${SYSTEM_DIR}" ]; then
+        echo "==> Downloading and applying patches..."
+        TMP_LINUX=$(mktemp -d)
 
-    for f in Emby.Server.Implementations.dll Emby.Web.dll; do
-        wget -q -O "${TMP_LINUX}/${f}" "${LINUX_FILES}/${f}"
-        cp "${TMP_LINUX}/${f}" "${SYSTEM_DIR}/${f}"
-        echo "    Updated ${f}"
-    done
+        wget -q -O "${TMP_LINUX}/Emby.Server.Implementations.dll" "${LINUX_FILES}/Emby.Server.Implementations.dll"
+        cp "${TMP_LINUX}/Emby.Server.Implementations.dll" "${SYSTEM_DIR}/Emby.Server.Implementations.dll"
+        echo "    Updated Emby.Server.Implementations.dll"
 
-    wget -q -O "${TMP_LINUX}/embypremiere.js" "${LINUX_FILES}/dashboard-ui/embypremiere/embypremiere.js"
-    mkdir -p "${DASHBOARD_DIR}/embypremiere"
-    cp "${TMP_LINUX}/embypremiere.js" "${DASHBOARD_DIR}/embypremiere/embypremiere.js"
-    echo "    Updated embypremiere.js"
+        wget -q -O "${TMP_LINUX}/Emby.Web.dll" "${LINUX_FILES}/Emby.Web.dll"
+        cp "${TMP_LINUX}/Emby.Web.dll" "${SYSTEM_DIR}/Emby.Web.dll"
+        echo "    Updated Emby.Web.dll"
 
-    wget -q -O "${TMP_LINUX}/connectionmanager.js" "${LINUX_FILES}/dashboard-ui/modules/emby-apiclient/connectionmanager.js"
-    mkdir -p "${DASHBOARD_DIR}/modules/emby-apiclient"
-    cp "${TMP_LINUX}/connectionmanager.js" "${DASHBOARD_DIR}/modules/emby-apiclient/connectionmanager.js"
-    echo "    Updated connectionmanager.js"
+        wget -q -O "${TMP_LINUX}/embypremiere.js" "${LINUX_FILES}/dashboard-ui/embypremiere/embypremiere.js"
+        mkdir -p "${DASHBOARD_DIR}/embypremiere"
+        cp "${TMP_LINUX}/embypremiere.js" "${DASHBOARD_DIR}/embypremiere/embypremiere.js"
+        echo "    Updated embypremiere.js"
 
-    wget -q -O "${TMP_LINUX}/Emby.CustomCssJS.dll" "${LINUX_FILES}/plugins/Emby.CustomCssJS.dll"
-    cp "${TMP_LINUX}/Emby.CustomCssJS.dll" "${PLUGINS_DIR}/Emby.CustomCssJS.dll"
-    echo "    Updated CustomCssJS"
+        wget -q -O "${TMP_LINUX}/connectionmanager.js" "${LINUX_FILES}/dashboard-ui/modules/emby-apiclient/connectionmanager.js"
+        mkdir -p "${DASHBOARD_DIR}/modules/emby-apiclient"
+        cp "${TMP_LINUX}/connectionmanager.js" "${DASHBOARD_DIR}/modules/emby-apiclient/connectionmanager.js"
+        echo "    Updated connectionmanager.js"
 
-    rm -rf "${TMP_LINUX}"
+        wget -q -O "${TMP_LINUX}/Emby.CustomCssJS.dll" "${LINUX_FILES}/plugins/Emby.CustomCssJS.dll"
+        cp "${TMP_LINUX}/Emby.CustomCssJS.dll" "${PLUGINS_DIR}/Emby.CustomCssJS.dll"
+        echo "    Updated CustomCssJS"
+
+        rm -rf "${TMP_LINUX}"
+    else
+        echo "!! System directory not found at ${SYSTEM_DIR}"
+    fi
 fi
 
-# ---- Step 3: Stop Emby and install plugin ----
-echo "==> Stopping Emby Server..."
-systemctl stop emby-server || true
+# ---- Step 3: Install Segment Loop plugin ----
+if ask "Install/update Segment Loop plugin?"; then
+    echo "==> Stopping Emby Server..."
+    systemctl stop emby-server || true
 
-echo "==> Downloading plugin DLL..."
-wget -q -O "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" "${PLUGIN_DLL}"
+    echo "==> Downloading plugin DLL..."
+    wget -q -O "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" "${PLUGIN_DLL}"
 
-echo "==> Downloading segmentloop.js..."
-TMP_JS=$(mktemp)
-wget -q -O "${TMP_JS}" "${SEGLOOP_JS}"
+    echo "==> Downloading segmentloop.js..."
+    TMP_JS=$(mktemp)
+    wget -q -O "${TMP_JS}" "${SEGLOOP_JS}"
 
-# Clean stale files
-rm -rf "${DASHBOARD_DIR}/modules/segmentloop" 2>/dev/null || true
+    rm -rf "${DASHBOARD_DIR}/modules/segmentloop" 2>/dev/null || true
 
-if [ -f "${INDEX_HTML}" ]; then
-    # Remove all previous traces
-    sed -i '/SegmentLoop\/ClientScript/d' "${INDEX_HTML}" 2>/dev/null || true
-    sed -i '/modules\/segmentloop/d'        "${INDEX_HTML}" 2>/dev/null || true
-    sed -i '/<!-- SegmentLoop -->/,/\/script>/d' "${INDEX_HTML}" 2>/dev/null || true
+    if ask "Inject segment loop script into index.html?"; then
+        if [ -f "${INDEX_HTML}" ]; then
+            sed -i '/SegmentLoop\/ClientScript/d' "${INDEX_HTML}" 2>/dev/null || true
+            sed -i '/modules\/segmentloop/d'        "${INDEX_HTML}" 2>/dev/null || true
+            sed -i '/<!-- SegmentLoop -->/,/\/script>/d' "${INDEX_HTML}" 2>/dev/null || true
 
-    if ! grep -q "${MARKER}" "${INDEX_HTML}"; then
-        python3 -c "
+            if ! grep -q "${MARKER}" "${INDEX_HTML}"; then
+                python3 -c "
 html = open('${INDEX_HTML}').read()
 js   = open('${TMP_JS}').read()
 inj  = '${MARKER}\n<script>\nwindow.EmbySegmentLoopConfig={startKey:\"[\",endKey:\"]\",captureKey:\"P\"};\n' + js + '\n</script>\n'
 open('${INDEX_HTML}','w').write(html.replace('</body>', inj + '</body>'))
 "
-        echo "==> Script injected inline into index.html"
-    else
-        echo "==> Script already injected"
+                echo "==> Script injected"
+            else
+                echo "==> Already injected"
+            fi
+            chmod 644 "${INDEX_HTML}" 2>/dev/null || true
+        else
+            echo "!! index.html not found"
+        fi
     fi
-    chmod 644 "${INDEX_HTML}" 2>/dev/null || true
-else
-    echo "!! index.html not found"
-    exit 1
-fi
 
-rm -f "${TMP_JS}"
-echo "==> Starting Emby Server..."
-systemctl start emby-server
+    rm -f "${TMP_JS}"
+    echo "==> Starting Emby Server..."
+    systemctl start emby-server
+fi
 
 sleep 3
 DLL_VER=$(wget -q -O - "${RAW_BASE}/release/VERSION" 2>/dev/null || echo "unknown")
