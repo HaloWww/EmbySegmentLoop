@@ -54,10 +54,15 @@
         if (!itemId) {
             return [];
         }
-        if (Object.prototype.hasOwnProperty.call(itemSegmentCache, itemId)) {
-            return sortSegments(itemSegmentCache[itemId]);
+        var cached = itemSegmentCache[itemId];
+        if (Array.isArray(cached)) {
+            if (cached.length) return sortSegments(cached);
+            // empty cache – fall through to localStorage in case data was
+            // saved by another tab or before the server responded empty
         }
-        return sortSegments(getState().items[itemId] || []);
+        var local = getState().items[itemId] || [];
+        if (local.length) itemSegmentCache[itemId] = cloneSegments(local);
+        return sortSegments(local);
     }
 
     function setItemSegments(itemId, segments) {
