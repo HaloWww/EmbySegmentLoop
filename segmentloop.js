@@ -541,27 +541,10 @@
         }
     }
 
-    var detailRetryTimer = null;
-    var lastDetailUrl = '';
-
     function renderDetailSegments() {
         var buttons = document.querySelector('.mainDetailButtons');
         var itemId = getUrlItemId();
-        var currentUrl = location.href;
-
-        if (!buttons || !itemId) {
-            if (!detailRetryTimer && (itemId || /[?&]id=/.test(currentUrl))) {
-                if (currentUrl !== lastDetailUrl) { lastDetailUrl = currentUrl; }
-                detailRetryTimer = setTimeout(function () {
-                    detailRetryTimer = null;
-                    renderDetailSegments();
-                }, 500);
-            }
-            return;
-        }
-        clearTimeout(detailRetryTimer);
-        detailRetryTimer = null;
-        lastDetailUrl = currentUrl;
+        if (!buttons || !itemId) return;
         ensureItemLoaded(itemId);
         var host = document.querySelector('.embySegmentDetailList');
         if (!host) {
@@ -946,41 +929,7 @@
     setInterval(renderPlaybackSegments, 1500);
     setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
-    setInterval(function () {
-        if (document.querySelector('.mainDetailButtons, .itemView') && getUrlItemId()) renderDetailSegments();
-    }, 2000);
-    window.addEventListener('hashchange', function () {
-        var tries = 0;
-        function tryRender() {
-            if (tries > 6) return;
-            tries++;
-            if (document.querySelector('.mainDetailButtons') && getUrlItemId()) {
-                renderDetailSegments();
-            } else {
-                setTimeout(tryRender, 500);
-            }
-        }
-        setTimeout(tryRender, 500);
-    });
-    window.addEventListener('popstate', function () { setTimeout(renderDetailSegments, 500); });
-
-    // Emby uses history.pushState which does NOT fire hashchange.
-    // We also intercept pushState to detect SPA navigations.
-    var _pushState = history.pushState;
-    history.pushState = function () {
-        _pushState.apply(this, arguments);
-        var tries = 0;
-        function tryRender() {
-            if (tries > 8) return;
-            tries++;
-            if (document.querySelector('.mainDetailButtons') && getUrlItemId()) {
-                renderDetailSegments();
-            } else {
-                setTimeout(tryRender, 600);
-            }
-        }
-        setTimeout(tryRender, 600);
-    };
+    setInterval(renderDetailSegments, 2000);
 
     renderAll();
 }());
