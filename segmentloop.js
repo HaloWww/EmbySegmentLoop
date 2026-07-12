@@ -546,11 +546,11 @@
         if (!itemId) return;
         var host = document.querySelector('.embySegmentDetailList');
         if (!host) return;
-        ensureItemLoaded(itemId);
-        var segments = getItemSegments(itemId);
-        if (!segments.length) return;
-        host.style.display = '';
-        host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
+        ensureItemLoaded(itemId).then(function () {
+            var segments = getItemSegments(itemId);
+            if (!segments.length) return;
+            host.style.display = '';
+            host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
         var rows = document.createElement('div');
         rows.className = 'embySegmentRows focuscontainer-x';
         segments.forEach(function (segment) {
@@ -580,6 +580,7 @@
         add.onclick = function () { openEditor(itemId); };
         rows.appendChild(add);
         host.appendChild(rows);
+        });
     }
 
     function renderOsdSegments(itemId) {
