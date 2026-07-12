@@ -949,5 +949,7 @@
     setInterval(function () {
         if (document.querySelector('.mainDetailButtons, .itemView') && getUrlItemId()) renderDetailSegments();
     }, 2000);
+    window.addEventListener('hashchange', function () { setTimeout(renderDetailSegments, 300); });
+    window.addEventListener('popstate', function () { setTimeout(renderDetailSegments, 300); });
     renderAll();
 }());
