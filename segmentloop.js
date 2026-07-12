@@ -553,6 +553,7 @@
             console.log('[SegLoop] renderDetail: loaded itemId=' + itemId + ' count=' + segments.length + ' display=' + host.style.display);
             if (!segments.length) return;
             host.classList.remove('hide');
+            host.style.display = '';
             host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
         var rows = document.createElement('div');
         rows.className = 'embySegmentRows focuscontainer-x';

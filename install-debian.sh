@@ -57,10 +57,11 @@ fi
 # This ensures the container exists in every detail page view (fresh or cached).
 ITEM_HTML="${DASHBOARD_DIR}/item/item.html"
 if [ -f "${ITEM_HTML}" ]; then
-    if ! grep -q 'embySegmentDetailList' "${ITEM_HTML}"; then
-        python3 -c "
+    # Always re-inject – clean up previous versions first
+    python3 -c "
+import re
 html = open('${ITEM_HTML}').read()
-# Insert after the closing </div> of mainDetailButtons
+html = re.sub(r'<div\s+class=\"embySegmentDetailList[^>]*>.*?</div>\s*', '', html, flags=re.DOTALL)
 idx = html.find('mainDetailButtons')
 if idx > 0:
     closeDiv = html.find('</div>', idx)
@@ -70,8 +71,6 @@ if idx > 0:
         open('${ITEM_HTML}','w').write(html)
         print('==> Segment container injected into item.html')
 "
-    fi
-fi
 
 rm -f "${TMP_JS}"
 echo "==> Starting Emby Server..."
