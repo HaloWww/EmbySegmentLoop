@@ -473,6 +473,8 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
+        currentPlaybackItemId = itemId;
+        rememberPlaybackItemId(itemId);
         var scope = null;
         var scopes = document.querySelectorAll('.itemView[data-itemid="' + itemId + '"], [data-itemid="' + itemId + '"]');
         for (var s = 0; s < scopes.length; s++) {
@@ -495,7 +497,7 @@
         if (!video) {
             return;
         }
-        if (currentPlaybackItemId && currentPlaybackItemId !== itemId) {
+        if (video.currentTime > 1 && currentPlaybackItemId && currentPlaybackItemId !== itemId) {
             return;
         }
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
@@ -701,10 +703,6 @@
 
     function tryAnyPendingSegment() {
         if (!pendingSegmentLaunch) return;
-        if (currentPlaybackItemId && currentPlaybackItemId !== pendingSegmentLaunch.itemId) {
-            pendingSegmentLaunch = null;
-            return;
-        }
         tryPendingSegment(pendingSegmentLaunch.itemId);
     }
 
