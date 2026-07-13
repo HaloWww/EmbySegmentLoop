@@ -473,8 +473,10 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
-        var playButton = document.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
-        if (!playButton) playButton = document.querySelector('.btnResume:not(.hide)');
+        var scope = document.querySelector('.itemView[data-itemid="' + itemId + '"]:not(.hide), [data-itemid="' + itemId + '"]:not(.hide)');
+        if (!scope) scope = document;
+        var playButton = scope.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
+        if (!playButton) playButton = scope.querySelector('.btnResume:not(.hide)');
         if (playButton) {
             segmentLaunchInProgress = true;
             playButton.click();
