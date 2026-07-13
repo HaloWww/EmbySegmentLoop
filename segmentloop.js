@@ -466,9 +466,11 @@
     }
 
     function playSegmentFromDetail(itemId, segment) {
+        console.log('[SegLoop] playSegmentFromDetail', itemId, segment.name);
         activeSegment = null;
         var video = getVideo();
         if (video) {
+            console.log('[SegLoop]  video already playing, direct activate');
             activateSegment(itemId, segment);
             return;
         }
@@ -477,11 +479,14 @@
         rememberPlaybackItemId(itemId);
         var scope = null;
         var scopes = document.querySelectorAll('.itemView[data-itemid="' + itemId + '"], [data-itemid="' + itemId + '"]');
+        console.log('[SegLoop]  found ' + scopes.length + ' itemViews for ' + itemId);
         for (var s = 0; s < scopes.length; s++) {
+            console.log('[SegLoop]   view ' + s + ': isRendered=' + isRendered(scopes[s]) + ' class=' + String(scopes[s].className).slice(0,60));
             if (isRendered(scopes[s])) { scope = scopes[s]; break; }
         }
-        if (!scope) scope = document;
+        if (!scope) { console.log('[SegLoop]  no visible scope, using document'); scope = document; }
         var playButton = scope.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide), .btnResume:not(.hide)');
+        console.log('[SegLoop]  playButton=' + !!playButton + ' classes=' + (playButton ? String(playButton.className).slice(0,60) : ''));
         if (playButton) {
             segmentLaunchInProgress = true;
             playButton.click();
@@ -495,9 +500,12 @@
     function activateSegment(itemId, segment) {
         var video = getVideo();
         if (!video) {
+            console.log('[SegLoop] activateSegment: no video');
             return;
         }
+        console.log('[SegLoop] activateSegment: itemId=' + itemId + ' seg=' + segment.name + ' curTime=' + video.currentTime + ' cpId=' + currentPlaybackItemId);
         if (video.currentTime > 1 && currentPlaybackItemId && currentPlaybackItemId !== itemId) {
+            console.log('[SegLoop]  BLOCKED: wrong item');
             return;
         }
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
@@ -696,8 +704,11 @@
         }
         var segment = getItemSegments(itemId).filter(function (item) { return item.id === pendingSegmentLaunch.segmentId; })[0];
         if (segment) {
+            console.log('[SegLoop] tryPendingSegment activating: ' + itemId + ' ' + segment.name);
             pendingSegmentLaunch = null;
             activateSegment(itemId, segment);
+        } else {
+            console.log('[SegLoop] tryPendingSegment: segment not found in ' + itemId);
         }
     }
 
