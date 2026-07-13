@@ -495,6 +495,9 @@
         if (!video) {
             return;
         }
+        if (currentPlaybackItemId && currentPlaybackItemId !== itemId) {
+            return;
+        }
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
             activeSegment = null;
             renderOsdSegments(itemId);
@@ -698,6 +701,10 @@
 
     function tryAnyPendingSegment() {
         if (!pendingSegmentLaunch) return;
+        if (currentPlaybackItemId && currentPlaybackItemId !== pendingSegmentLaunch.itemId) {
+            pendingSegmentLaunch = null;
+            return;
+        }
         tryPendingSegment(pendingSegmentLaunch.itemId);
     }
 
