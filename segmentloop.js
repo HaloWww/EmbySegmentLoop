@@ -473,10 +473,13 @@
             return;
         }
         pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
-        var scope = document.querySelector('.itemView[data-itemid="' + itemId + '"]:not(.hide), [data-itemid="' + itemId + '"]:not(.hide)');
+        var scope = null;
+        var scopes = document.querySelectorAll('.itemView[data-itemid="' + itemId + '"], [data-itemid="' + itemId + '"]');
+        for (var s = 0; s < scopes.length; s++) {
+            if (isRendered(scopes[s])) { scope = scopes[s]; break; }
+        }
         if (!scope) scope = document;
-        var playButton = scope.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide)');
-        if (!playButton) playButton = scope.querySelector('.btnResume:not(.hide)');
+        var playButton = scope.querySelector('.btnPlay:not(.hide), .btnMainPlay:not(.hide), .btnResume:not(.hide)');
         if (playButton) {
             segmentLaunchInProgress = true;
             playButton.click();
