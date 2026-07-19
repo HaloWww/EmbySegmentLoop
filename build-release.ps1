@@ -15,4 +15,13 @@ New-Item -ItemType Directory -Path $release | Out-Null
 
 Copy-Item -LiteralPath "$PSScriptRoot\publish\Emby.Plugins.SegmentLoop.dll" -Destination $release
 
-Compress-Archive -Path "$release\*" -DestinationPath "$PSScriptRoot\Emby.Plugins.SegmentLoop-1.1.1.zip" -Force
+[xml]$project = Get-Content -LiteralPath "$PSScriptRoot\EmbySegmentLoop.csproj"
+$version = [string]$project.Project.PropertyGroup.Version
+$packageVersion = $version -replace '\.0$', ''
+
+Compress-Archive `
+    -LiteralPath "$release\Emby.Plugins.SegmentLoop.dll" `
+    -DestinationPath "$PSScriptRoot\Emby.Plugins.SegmentLoop-$packageVersion.zip" `
+    -Force
+
+Set-Content -LiteralPath "$release\VERSION" -Value $version -NoNewline

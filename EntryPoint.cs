@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Plugins;
 
@@ -17,34 +19,55 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
     public void Run()
     {
         try { SegmentRepository.Instance.EnsureCreated(); } catch { }
-        InjectScript();
+        WriteClientConfiguration(
+            _applicationPaths,
+            Plugin.Instance?.Configuration ?? new PluginConfiguration());
         InjectItemJsHook();
     }
 
     public void Dispose() { }
 
-    private void InjectScript()
+    public static void WriteClientConfiguration(
+        IApplicationPaths applicationPaths,
+        PluginConfiguration configuration)
     {
         try
         {
-            var indexPath = Path.Combine(_applicationPaths.ProgramSystemPath,
+            var indexPath = Path.Combine(applicationPaths.ProgramSystemPath,
                 "dashboard-ui", "index.html");
             if (!File.Exists(indexPath)) return;
 
             var html = File.ReadAllText(indexPath);
-            var marker = "<!-- SegmentLoop -->";
-
-            if (html.Contains(marker)) return;
             if (!html.Contains("</body>")) return;
 
             var js = ReadEmbeddedScript();
             if (string.IsNullOrWhiteSpace(js)) return;
 
-            var injection = marker + Environment.NewLine +
+            const string startMarker = "<!-- SegmentLoop:start -->";
+            const string endMarker = "<!-- SegmentLoop:end -->";
+            html = Regex.Replace(
+                html,
+                @"\s*<!-- SegmentLoop:start -->[\s\S]*?<!-- SegmentLoop:end -->\s*",
+                Environment.NewLine,
+                RegexOptions.IgnoreCase);
+            html = Regex.Replace(
+                html,
+                @"\s*<!-- SegmentLoop -->\s*<script>[\s\S]*?</script>\s*",
+                Environment.NewLine,
+                RegexOptions.IgnoreCase);
+
+            var injection = startMarker + Environment.NewLine +
                 "<script>" + Environment.NewLine +
-                "window.EmbySegmentLoopConfig = { startKey: '[', endKey: ']', captureKey: 'P' };" + Environment.NewLine +
+                "window.EmbySegmentLoopConfig = " +
+                JsonSerializer.Serialize(new
+                {
+                    startKey = string.IsNullOrWhiteSpace(configuration.StartKey) ? "[" : configuration.StartKey,
+                    endKey = string.IsNullOrWhiteSpace(configuration.EndKey) ? "]" : configuration.EndKey,
+                    captureKey = string.IsNullOrWhiteSpace(configuration.CaptureKey) ? "P" : configuration.CaptureKey
+                }) + ";" + Environment.NewLine +
                 js + Environment.NewLine +
-                "</script>" + Environment.NewLine;
+                "</script>" + Environment.NewLine +
+                endMarker + Environment.NewLine;
 
             html = html.Replace("</body>", injection + "</body>");
             File.WriteAllText(indexPath, html);
