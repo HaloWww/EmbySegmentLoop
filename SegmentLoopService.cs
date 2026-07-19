@@ -38,14 +38,12 @@ public sealed class SegmentLoopService : BaseApiService
 {
     public object Get(GetSegmentLoopSegments request)
     {
-        try { return SegmentRepository.Instance.Get(request.ItemId); }
-        catch { return new List<SegmentRecord>(); }
+        return SegmentRepository.Instance.Get(request.ItemId);
     }
 
     public object Post(SaveSegmentLoopSegments request)
     {
-        try { SegmentRepository.Instance.Replace(request.ItemId, request.Segments ?? new()); }
-        catch { /* SQLite unavailable on this platform – silently ignore */ }
+        SegmentRepository.Instance.Replace(request.ItemId, request.Segments ?? new());
         return new { Success = true };
     }
 

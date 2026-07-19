@@ -2,7 +2,6 @@
     'use strict';
 
     var storageKey = 'embySegmentLoop.v1';
-    var pluginId = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
     var rememberedItemKey = 'embySegmentLoop.currentItem';
     var activeSegment = null;
     var markStartMs = null;
@@ -74,7 +73,7 @@
             return copy;
         });
         itemSegmentCache[itemId] = normalized;
-        persistItemSegments(itemId, normalized).then(function (saved) {
+        return persistItemSegments(itemId, normalized).then(function (saved) {
             if (saved) {
                 removeLegacyItem(itemId);
             } else {
@@ -82,6 +81,7 @@
                 state.items[itemId] = normalized;
                 saveState(state);
             }
+            return saved;
         });
     }
 
@@ -379,8 +379,20 @@
         var segments = editingSingle ? cloneSegments([selectedSegment]) : originalSegments.slice();
         var overlay = document.createElement('div');
         overlay.className = 'embySegmentDialogOverlay';
-        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>片段编辑</h2><button type="button" class="embySegmentDialogClose" title="取消">&#xe5cd;</button></div><div class="embySegmentDialogBody"><div class="embySegmentHelp">时间支持秒或 HH:MM:SS.mmm，例如 83.250 或 0:01:23.250。快捷键请在 Emby 插件设置中修改。</div><div class="embySegmentEditorRows"></div><button type="button" class="embySegmentEditorAdd raised">+ 新建片段</button></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised cancel">取消</button><button type="button" class="embySegmentSave raised submit">保存</button></div></div>';
+        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>片段编辑</h2><button type="button" class="embySegmentDialogClose paper-icon-button-light" title="取消" aria-label="关闭"><i class="md-icon">close</i></button></div><div class="embySegmentDialogBody"><div class="embySegmentHelp">时间支持秒或 HH:MM:SS.mmm，例如 83.250 或 0:01:23.250。快捷键请在 Emby 插件设置中修改。</div><div class="embySegmentEditorRows"></div><button type="button" class="embySegmentEditorAdd raised">+ 新建片段</button></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised cancel">取消</button><button type="button" class="embySegmentSave raised submit">保存</button></div></div>';
         document.body.appendChild(overlay);
+
+        function syncRowsToSegments() {
+            var byId = {};
+            segments.forEach(function (segment) { byId[String(segment.id)] = segment; });
+            Array.prototype.slice.call(overlay.querySelectorAll('.embySegmentEditorRow')).forEach(function (row) {
+                var segment = byId[row.dataset.segmentId];
+                if (!segment) return;
+                segment.name = row.querySelector('.embySegmentName').value;
+                segment.startText = row.querySelector('.embySegmentStart').value;
+                segment.endText = row.querySelector('.embySegmentEnd').value;
+            });
+        }
 
         function renderRows() {
             var rows = overlay.querySelector('.embySegmentEditorRows');
@@ -389,12 +401,14 @@
                 var row = document.createElement('div');
                 row.className = 'embySegmentEditorRow';
                 row.dataset.index = String(index);
-                row.innerHTML = '<label><span>名称</span><input class="embySegmentName" value=""></label><label><span>开始</span><input class="embySegmentStart" value=""></label><label><span>结束</span><input class="embySegmentEnd" value=""></label><button type="button" class="embySegmentDelete" title="删除">&#xe872;</button>';
+                row.dataset.segmentId = String(segment.id);
+                row.innerHTML = '<label><span>名称</span><input class="embySegmentName" value=""></label><label><span>开始</span><input class="embySegmentStart" value=""></label><label><span>结束</span><input class="embySegmentEnd" value=""></label><button type="button" class="embySegmentDelete paper-icon-button-light" title="删除" aria-label="删除片段"><i class="md-icon">delete</i></button>';
                 row.querySelector('.embySegmentName').value = segment.name || ('片段 ' + (index + 1));
-                row.querySelector('.embySegmentStart').value = formatTime(segment.startMs);
-                row.querySelector('.embySegmentEnd').value = formatTime(segment.endMs);
+                row.querySelector('.embySegmentStart').value = segment.startText != null ? segment.startText : formatTime(segment.startMs);
+                row.querySelector('.embySegmentEnd').value = segment.endText != null ? segment.endText : formatTime(segment.endMs);
                 row.querySelector('.embySegmentDelete').onclick = function () {
-                    segments.splice(index, 1);
+                    syncRowsToSegments();
+                    segments = segments.filter(function (item) { return String(item.id) !== row.dataset.segmentId; });
                     renderRows();
                 };
                 rows.appendChild(row);
@@ -406,6 +420,7 @@
             addButton.classList.add('hide');
         }
         addButton.onclick = function () {
+            syncRowsToSegments();
             var order = segments.reduce(function (max, segment, index) {
                 return Math.max(max, getSegmentOrder(segment, index));
             }, 0) + 1;
@@ -419,34 +434,50 @@
             renderRows();
         };
         overlay.querySelector('.embySegmentSave').onclick = function () {
+            syncRowsToSegments();
             var newSegments = editingSingle ? originalSegments.filter(function (segment) {
                 return segment.id !== selectedSegment.id;
             }) : [];
             var invalid = false;
-            Array.prototype.slice.call(overlay.querySelectorAll('.embySegmentEditorRow')).forEach(function (row, index) {
-                var startMs = parseTime(row.querySelector('.embySegmentStart').value);
-                var endMs = parseTime(row.querySelector('.embySegmentEnd').value);
+            var rowsById = {};
+            Array.prototype.slice.call(overlay.querySelectorAll('.embySegmentEditorRow')).forEach(function (row) {
+                rowsById[row.dataset.segmentId] = row;
+                row.classList.remove('embySegmentInvalid');
+            });
+            segments.forEach(function (segment, index) {
+                var row = rowsById[String(segment.id)];
+                if (!row) return;
+                var startMs = parseTime(segment.startText);
+                var endMs = parseTime(segment.endText);
                 if (!isFinite(startMs) || !isFinite(endMs) || endMs <= startMs) {
                     invalid = true;
                     row.classList.add('embySegmentInvalid');
                     return;
                 }
                 newSegments.push({
-                    id: segments[index].id || String(Date.now() + index),
-                    name: row.querySelector('.embySegmentName').value.trim() || ('片段 ' + (index + 1)),
+                    id: segment.id || String(Date.now() + index),
+                    name: String(segment.name || '').trim() || ('片段 ' + (index + 1)),
                     startMs: startMs,
                     endMs: endMs,
-                    order: getSegmentOrder(segments[index], index)
+                    order: getSegmentOrder(segment, index)
                 });
             });
             if (invalid) {
                 showToast('请修正无效片段时间');
                 return;
             }
-            setItemSegments(itemId, newSegments);
-            closeEditor();
-            renderAll();
-            showToast('片段设置已保存');
+            var saveButton = overlay.querySelector('.embySegmentSave');
+            saveButton.disabled = true;
+            setItemSegments(itemId, newSegments).then(function (saved) {
+                saveButton.disabled = false;
+                if (!saved) {
+                    showToast('数据库保存失败，请重试');
+                    return;
+                }
+                closeEditor();
+                renderAll();
+                showToast('片段设置已保存');
+            });
         };
         overlay.querySelector('.embySegmentCancel').onclick = closeEditor;
         overlay.querySelector('.embySegmentDialogClose').onclick = closeEditor;
@@ -872,61 +903,11 @@
         document.head.appendChild(style);
     }
 
-    function openPluginSettingsDialog() {
-        var old = document.querySelector('.embySegPluginSettingsOverlay');
-        if (old) { old.remove(); }
-        var overlay = document.createElement('div');
-        overlay.className = 'embySegmentDialogOverlay embySegPluginSettingsOverlay';
-        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>\u5feb\u6377\u952e\u8bbe\u7f6e</h2><button type="button" class="embySegmentDialogClose" title="\u5173\u95ed">&#xe5cd;</button></div><div class="embySegmentDialogBody"><div class="embySegPluginField"><label class="embySegPluginLabel">\u5f00\u59cb\u5feb\u6377\u952e</label><input class="embySegPluginInput" id="slgStart" type="text" placeholder="["><div class="embySegPluginDesc">\u9ed8\u8ba4 [\u3002\u586b\u5199 KeyboardEvent.key \u7684\u503c\u3002</div></div><div class="embySegPluginField"><label class="embySegPluginLabel">\u7ed3\u675f\u5feb\u6377\u952e</label><input class="embySegPluginInput" id="slgEnd" type="text" placeholder="]"><div class="embySegPluginDesc">\u9ed8\u8ba4 ]\u3002\u4fdd\u5b58\u540e\u5237\u65b0 Web \u9875\u9762\u751f\u6548\u3002</div></div><div class="embySegPluginField"><label class="embySegPluginLabel">\u7247\u6bb5\u6570\u636e\u5e93\u8def\u5f84</label><input class="embySegPluginInput" id="slgPath" type="text" placeholder="\u7559\u7a7a\u4f7f\u7528\u9ed8\u8ba4\u8def\u5f84"><div class="embySegPluginDesc">\u7559\u7a7a\u65f6\u4fdd\u5b58\u5230 programdata/metadata/segmentloop/segments.db\u3002</div></div></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised">\u53d6\u6d88</button><button type="button" class="embySegmentSave raised">\u4fdd\u5b58</button></div></div>';
-        document.body.appendChild(overlay);
-        if (typeof ApiClient !== 'undefined') {
-            ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
-                var s = document.getElementById('slgStart'), e = document.getElementById('slgEnd'), p = document.getElementById('slgPath');
-                if (s) s.value = cfg.StartKey || '[';
-                if (e) e.value = cfg.EndKey || ']';
-                if (p && cfg.StoragePath != null) p.value = cfg.StoragePath;
-            });
-        }
-        var closeDialog = function () { overlay.remove(); };
-        overlay.querySelector('.embySegmentDialogClose').onclick = closeDialog;
-        overlay.querySelector('.embySegmentCancel').onclick = closeDialog;
-        overlay.onclick = function (e) { if (e.target === overlay) closeDialog(); };
-        overlay.querySelector('.embySegmentSave').onclick = function () {
-            var s = document.getElementById('slgStart'), e = document.getElementById('slgEnd'), p = document.getElementById('slgPath');
-            var sk = s && s.value || '[', ek = e && e.value || ']', pt = p && p.value || '';
-            if (typeof ApiClient === 'undefined') { closeDialog(); return; }
-            ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
-                cfg.StartKey = sk; cfg.EndKey = ek; cfg.StoragePath = pt;
-                return ApiClient.updatePluginConfiguration(pluginId, cfg);
-            }).then(function () {
-                closeDialog();
-                showToast('\u5df2\u4fdd\u5b58\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u8ba9\u5feb\u6377\u952e\u914d\u7f6e\u751f\u6548');
-            });
-        };
-    }
-
-    function renderSettingsItem() {
-        var routes = document.querySelector('.dynamicRoutes');
-        if (!routes || !routes.children.length) { return; }
-        if (routes.querySelector('.embySegLoopSettingsItem')) { return; }
-        var item = document.createElement('a');
-        item.className = 'navMenuOption navMenuOption-settings embySegLoopSettingsItem';
-        item.href = 'javascript:void(0)';
-        item.innerHTML =
-            '<div class="settingsMenuListItemBody settingsMenuListItemBody-extrapadding">' +
-            '<i class="md-icon navMenuOption-icon" style="font-family:Material Icons,Arial">&#xe227;</i>' +
-            '<div class="navMenuOption-text">Segment Loop</div>' +
-            '</div>';
-        item.onclick = function (e) { e.preventDefault(); openPluginSettingsDialog(); };
-        routes.appendChild(item);
-    }
-
     function renderAll() {
         isRendering = true;
         injectStyle();
         renderDetailSegments();
         renderPlaybackSegments();
-        renderSettingsItem();
         setTimeout(function () {
             isRendering = false;
         }, 100);
