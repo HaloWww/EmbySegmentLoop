@@ -15,6 +15,225 @@
     var loadingServerItems = {};
     var itemSegmentCache = {};
     var pendingSegmentLaunch = null;
+    var loopSeekState = {
+        inProgress: false,
+        video: null,
+        targetMs: 0,
+        startedAt: 0,
+        timeoutId: null,
+        reason: ''
+    };
+    var loopSession = null;
+    var loopDiagnostics = [];
+
+    function addLoopDiagnostic(eventName, details) {
+        var entry = {
+            time: new Date().toISOString(),
+            event: eventName,
+            details: details || {}
+        };
+        loopDiagnostics.push(entry);
+        if (loopDiagnostics.length > 200) {
+            loopDiagnostics.splice(0, loopDiagnostics.length - 200);
+        }
+        console.info('[SegmentLoop]', eventName, JSON.stringify(entry.details));
+        return entry;
+    }
+
+    function safeMediaPath(url) {
+        if (!url) return '';
+        try {
+            return new URL(url, window.location.href).pathname;
+        } catch (error) {
+            return String(url).split('?')[0];
+        }
+    }
+
+    function getBufferedRanges(video) {
+        var ranges = [];
+        if (!video || !video.buffered) return ranges;
+        for (var i = 0; i < video.buffered.length; i++) {
+            ranges.push({
+                start: Math.round(video.buffered.start(i) * 1000) / 1000,
+                end: Math.round(video.buffered.end(i) * 1000) / 1000
+            });
+        }
+        return ranges;
+    }
+
+    function isSegmentBuffered(video, segment) {
+        var start = segment.startMs / 1000;
+        var end = segment.endMs / 1000;
+        var ranges = getBufferedRanges(video);
+        return ranges.some(function (range) {
+            return range.start <= start + 0.05 && range.end >= end - 0.05;
+        });
+    }
+
+    function getMediaResourceSnapshot(video) {
+        var path = safeMediaPath(video && (video.currentSrc || video.src));
+        var result = {
+            path: path,
+            requestCount: 0,
+            transferSize: 0,
+            encodedBodySize: 0,
+            decodedBodySize: 0,
+            lastStartTime: 0
+        };
+        if (!path || !window.performance || !performance.getEntriesByType) return result;
+        performance.getEntriesByType('resource').forEach(function (entry) {
+            if (safeMediaPath(entry.name) !== path) return;
+            result.requestCount += 1;
+            result.transferSize += Number(entry.transferSize) || 0;
+            result.encodedBodySize += Number(entry.encodedBodySize) || 0;
+            result.decodedBodySize += Number(entry.decodedBodySize) || 0;
+            result.lastStartTime = Math.max(result.lastStartTime, Number(entry.startTime) || 0);
+        });
+        return result;
+    }
+
+    function resourceDelta(before, after) {
+        before = before || {};
+        after = after || {};
+        return {
+            requestCount: Math.max(0, (after.requestCount || 0) - (before.requestCount || 0)),
+            transferSize: Math.max(0, (after.transferSize || 0) - (before.transferSize || 0)),
+            encodedBodySize: Math.max(0, (after.encodedBodySize || 0) - (before.encodedBodySize || 0)),
+            decodedBodySize: Math.max(0, (after.decodedBodySize || 0) - (before.decodedBodySize || 0))
+        };
+    }
+
+    function resetLoopSeekState() {
+        if (loopSeekState.timeoutId) {
+            clearTimeout(loopSeekState.timeoutId);
+        }
+        loopSeekState.inProgress = false;
+        loopSeekState.video = null;
+        loopSeekState.targetMs = 0;
+        loopSeekState.startedAt = 0;
+        loopSeekState.timeoutId = null;
+        loopSeekState.reason = '';
+    }
+
+    function stopActiveLoop(reason) {
+        if (loopSession && loopSession.video) {
+            if (loopSession.frameRequestId !== null && loopSession.video.cancelVideoFrameCallback) {
+                loopSession.video.cancelVideoFrameCallback(loopSession.frameRequestId);
+                loopSession.frameRequestId = null;
+            }
+            var finalSnapshot = getMediaResourceSnapshot(loopSession.video);
+            var finalDelta = resourceDelta(loopSession.lastResourceSnapshot, finalSnapshot);
+            loopSession.networkRequestsObserved += finalDelta.requestCount;
+            loopSession.transferBytesObserved += finalDelta.transferSize;
+            addLoopDiagnostic('loop-session-stop', {
+                reason: reason,
+                loops: loopSession.loops,
+                networkRequestsObserved: loopSession.networkRequestsObserved,
+                transferBytesObserved: loopSession.transferBytesObserved,
+                finalResourceDelta: finalDelta
+            });
+        }
+        resetLoopSeekState();
+        loopSession = null;
+        activeSegment = null;
+    }
+
+    function startLoopSession(video, itemId, segment) {
+        var snapshot = getMediaResourceSnapshot(video);
+        loopSession = {
+            video: video,
+            itemId: itemId,
+            segmentId: segment.id,
+            loops: 0,
+            networkRequestsObserved: 0,
+            transferBytesObserved: 0,
+            lastResourceSnapshot: snapshot,
+            frameRequestId: null
+        };
+        addLoopDiagnostic('loop-session-start', {
+            itemId: itemId,
+            segmentId: segment.id,
+            startMs: segment.startMs,
+            endMs: segment.endMs,
+            mediaPath: snapshot.path,
+            buffered: getBufferedRanges(video),
+            segmentBuffered: isSegmentBuffered(video, segment),
+            resourceSnapshot: snapshot
+        });
+        startLoopFrameWatch(video);
+    }
+
+    function finishLoopSeek(video, outcome) {
+        if (!loopSeekState.inProgress || loopSeekState.video !== video) return;
+        var elapsedMs = Date.now() - loopSeekState.startedAt;
+        var reason = loopSeekState.reason;
+        var targetMs = loopSeekState.targetMs;
+        resetLoopSeekState();
+        addLoopDiagnostic('loop-seek-finish', {
+            outcome: outcome,
+            reason: reason,
+            targetMs: targetMs,
+            currentMs: Math.round(video.currentTime * 1000),
+            elapsedMs: elapsedMs,
+            readyState: video.readyState,
+            networkState: video.networkState,
+            buffered: getBufferedRanges(video)
+        });
+    }
+
+    function requestLoopSeek(video, reason) {
+        if (!activeSegment || !video) return;
+        if (loopSeekState.inProgress) return;
+
+        var segment = activeSegment.segment;
+        var snapshot = getMediaResourceSnapshot(video);
+        var delta = loopSession ? resourceDelta(loopSession.lastResourceSnapshot, snapshot) : {};
+        if (loopSession) {
+            if (reason !== 'activate') loopSession.loops += 1;
+            loopSession.networkRequestsObserved += delta.requestCount || 0;
+            loopSession.transferBytesObserved += delta.transferSize || 0;
+            loopSession.lastResourceSnapshot = snapshot;
+        }
+
+        loopSeekState.inProgress = true;
+        loopSeekState.video = video;
+        loopSeekState.targetMs = segment.startMs;
+        loopSeekState.startedAt = Date.now();
+        loopSeekState.reason = reason;
+        addLoopDiagnostic('loop-seek-start', {
+            reason: reason,
+            loopNumber: loopSession ? loopSession.loops : 0,
+            fromMs: Math.round(video.currentTime * 1000),
+            targetMs: segment.startMs,
+            segmentBuffered: isSegmentBuffered(video, segment),
+            buffered: getBufferedRanges(video),
+            mediaResourceDeltaSinceLastLoop: delta,
+            readyState: video.readyState,
+            networkState: video.networkState
+        });
+
+        loopSeekState.timeoutId = setTimeout(function () {
+            if (loopSeekState.inProgress && loopSeekState.video === video) {
+                finishLoopSeek(video, 'timeout');
+            }
+        }, 2500);
+
+        try {
+            video.currentTime = Math.max(0, segment.startMs / 1000);
+            video.play().catch(function (error) {
+                addLoopDiagnostic('loop-play-rejected', { message: error && error.message || String(error) });
+            });
+            setTimeout(function () {
+                if (loopSeekState.inProgress && loopSeekState.video === video &&
+                    !video.seeking && Math.abs(video.currentTime * 1000 - segment.startMs) < 100) {
+                    finishLoopSeek(video, 'already-at-target');
+                }
+            }, 50);
+        } catch (error) {
+            addLoopDiagnostic('loop-seek-error', { message: error && error.message || String(error) });
+            finishLoopSeek(video, 'error');
+        }
+    }
 
     function loadState() {
         try {
@@ -497,7 +716,7 @@
     }
 
     function playSegmentFromDetail(itemId, segment) {
-        activeSegment = null;
+        stopActiveLoop('replace-from-detail');
         var video = getVideo();
         if (video) {
             activateSegment(itemId, segment);
@@ -533,45 +752,70 @@
             return;
         }
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
-            activeSegment = null;
+            stopActiveLoop('user-cancelled');
             renderOsdSegments(itemId);
             showToast('已取消片段循环');
             return;
         }
+        stopActiveLoop('replace-active-segment');
         rememberPlaybackItemId(itemId);
         activeSegment = { itemId: itemId, segment: segment };
-        seekVideo(video, segment.startMs);
-        video.play().catch(function () {});
+        startLoopSession(video, itemId, segment);
+        requestLoopSeek(video, 'activate');
         renderOsdSegments(itemId);
         showToast('循环播放：' + segment.name);
     }
 
-    function seekVideo(video, ms) {
-        var seconds = Math.max(0, ms / 1000);
-        try {
-            if (video.fastSeek) {
-                video.fastSeek(seconds);
-            } else {
-                video.currentTime = seconds;
-            }
-        } catch (err) {
-            video.currentTime = seconds;
-        }
-    }
-
-    function onVideoTimeUpdate() {
+    function onVideoTimeUpdate(videoOrEvent) {
         if (!activeSegment) {
             return;
         }
-        var video = getVideo();
+        var video = videoOrEvent && videoOrEvent.tagName === 'VIDEO'
+            ? videoOrEvent
+            : this && this.tagName === 'VIDEO'
+                ? this
+                : getVideo();
         if (!video) {
             return;
         }
+        if (loopSeekState.inProgress) return;
         var currentMs = video.currentTime * 1000;
-        if (currentMs < activeSegment.segment.startMs - 500 || currentMs >= activeSegment.segment.endMs) {
-            seekVideo(video, activeSegment.segment.startMs);
-            video.play().catch(function () {});
+        if (currentMs >= activeSegment.segment.endMs) {
+            requestLoopSeek(video, 'segment-end');
+        } else if (currentMs < activeSegment.segment.startMs - 750) {
+            requestLoopSeek(video, 'before-segment-start');
         }
+    }
+
+    function onLoopSeeked(event) {
+        finishLoopSeek(event.currentTarget, 'seeked');
+    }
+
+    function onLoopPlaybackState(event) {
+        if (!activeSegment || !loopSession || loopSession.video !== event.currentTarget) return;
+        var video = event.currentTarget;
+        addLoopDiagnostic('loop-media-' + event.type, {
+            currentMs: Math.round(video.currentTime * 1000),
+            seeking: video.seeking,
+            readyState: video.readyState,
+            networkState: video.networkState,
+            buffered: getBufferedRanges(video),
+            resourceSnapshot: getMediaResourceSnapshot(video)
+        });
+    }
+
+    function startLoopFrameWatch(video) {
+        if (!video.requestVideoFrameCallback || !loopSession || loopSession.video !== video ||
+            loopSession.frameRequestId !== null) return;
+        var onFrame = function () {
+            if (!loopSession || loopSession.video !== video || !activeSegment || !video.isConnected) return;
+            loopSession.frameRequestId = null;
+            onVideoTimeUpdate(video);
+            if (loopSession && loopSession.video === video && activeSegment) {
+                loopSession.frameRequestId = video.requestVideoFrameCallback(onFrame);
+            }
+        };
+        loopSession.frameRequestId = video.requestVideoFrameCallback(onFrame);
     }
 
     function ensureVideoHook() {
@@ -580,6 +824,10 @@
             video.embySegmentLoopHooked = true;
             video.addEventListener('timeupdate', onVideoTimeUpdate);
             video.addEventListener('ended', onVideoTimeUpdate);
+            video.addEventListener('seeked', onLoopSeeked);
+            video.addEventListener('waiting', onLoopPlaybackState);
+            video.addEventListener('stalled', onLoopPlaybackState);
+            video.addEventListener('canplay', onLoopPlaybackState);
         }
     }
 
@@ -742,7 +990,7 @@
         var generation = ++playbackRenderGeneration;
         ensureVideoHook();
         if (!getVideo()) {
-            activeSegment = null;
+            stopActiveLoop('video-unavailable');
             markStartMs = null;
             // Keep currentPlaybackItemId – clearing it here would forget which
             // video we were watching and prevent OSD buttons from showing when
@@ -885,7 +1133,7 @@
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
         }
-        activeSegment = null;
+        stopActiveLoop('normal-playback-click');
         markStartMs = null;
         pendingSegmentLaunch = null;
         currentPlaybackItemId = null;
@@ -913,7 +1161,12 @@
         }, 100);
     }
 
-    window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
+    window.EmbySegLoop = {
+        render: renderDetailSegments,
+        renderAll: renderAll,
+        getDiagnostics: function () { return loopDiagnostics.slice(); },
+        clearDiagnostics: function () { loopDiagnostics.length = 0; }
+    };
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('keydown', onKeyDown);
     new MutationObserver(function () {
@@ -924,7 +1177,6 @@
         renderTimer = setTimeout(renderAll, 150);
     }).observe(document.documentElement, { childList: true, subtree: true });
     setInterval(renderPlaybackSegments, 1500);
-    setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
     setInterval(renderAll, 500);
 
