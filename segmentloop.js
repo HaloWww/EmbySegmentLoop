@@ -21,8 +21,7 @@
         targetMs: 0,
         startedAt: 0,
         timeoutId: null,
-        reason: '',
-        retryCount: 0
+        reason: ''
     };
     var loopSession = null;
     var loopDiagnostics = [];
@@ -114,7 +113,6 @@
         loopSeekState.startedAt = 0;
         loopSeekState.timeoutId = null;
         loopSeekState.reason = '';
-        loopSeekState.retryCount = 0;
     }
 
     function stopActiveLoop(reason) {
@@ -170,7 +168,6 @@
         var elapsedMs = Date.now() - loopSeekState.startedAt;
         var reason = loopSeekState.reason;
         var targetMs = loopSeekState.targetMs;
-        var retryCount = loopSeekState.retryCount;
         resetLoopSeekState();
         addLoopDiagnostic('loop-seek-finish', {
             outcome: outcome,
@@ -178,7 +175,6 @@
             targetMs: targetMs,
             currentMs: Math.round(video.currentTime * 1000),
             elapsedMs: elapsedMs,
-            retryCount: retryCount,
             paused: video.paused,
             seeking: video.seeking,
             readyState: video.readyState,
@@ -219,35 +215,19 @@
     function scheduleLoopSeekTimeout(video) {
         loopSeekState.timeoutId = setTimeout(function () {
             if (!loopSeekState.inProgress || loopSeekState.video !== video) return;
-            if (loopSeekState.retryCount === 0) {
-                loopSeekState.retryCount = 1;
-                loopSeekState.startedAt = Date.now();
-                addLoopDiagnostic('loop-seek-timeout-retry', {
-                    targetMs: loopSeekState.targetMs,
-                    currentMs: Math.round(video.currentTime * 1000),
-                    paused: video.paused,
-                    seeking: video.seeking,
-                    readyState: video.readyState,
-                    networkState: video.networkState,
-                    buffered: getBufferedRanges(video)
-                });
-                try {
-                    // A tiny nudge cancels a browser seek that is stuck on the
-                    // exact same timestamp without visibly changing the range.
-                    video.currentTime = Math.max(0, (loopSeekState.targetMs + 10) / 1000);
-                    scheduleLoopSeekTimeout(video);
-                } catch (error) {
-                    addLoopDiagnostic('loop-seek-retry-error', {
-                        message: error && error.message || String(error)
-                    });
-                    finishLoopSeek(video, 'timeout');
-                    resumeLoopPlayback(video, 'seek-timeout');
-                }
-                return;
-            }
+            addLoopDiagnostic('loop-seek-timeout-abort', {
+                targetMs: loopSeekState.targetMs,
+                currentMs: Math.round(video.currentTime * 1000),
+                paused: video.paused,
+                seeking: video.seeking,
+                readyState: video.readyState,
+                networkState: video.networkState,
+                buffered: getBufferedRanges(video)
+            });
             finishLoopSeek(video, 'timeout');
-            resumeLoopPlayback(video, 'seek-timeout');
-            showToast('循环回跳超时，已尝试恢复播放');
+            stopActiveLoop('seek-timeout');
+            try { video.pause(); } catch (error) { }
+            showToast('循环回跳超时，已停止循环以避免重复取流');
         }, 2500);
     }
 
@@ -270,7 +250,6 @@
         loopSeekState.targetMs = segment.startMs;
         loopSeekState.startedAt = Date.now();
         loopSeekState.reason = reason;
-        loopSeekState.retryCount = 0;
         addLoopDiagnostic('loop-seek-start', {
             reason: reason,
             loopNumber: loopSession ? loopSession.loops : 0,
