@@ -21,7 +21,8 @@
         targetMs: 0,
         startedAt: 0,
         timeoutId: null,
-        reason: ''
+        reason: '',
+        retryCount: 0
     };
     var loopSession = null;
     var loopDiagnostics = [];
@@ -113,6 +114,7 @@
         loopSeekState.startedAt = 0;
         loopSeekState.timeoutId = null;
         loopSeekState.reason = '';
+        loopSeekState.retryCount = 0;
     }
 
     function stopActiveLoop(reason) {
@@ -168,6 +170,7 @@
         var elapsedMs = Date.now() - loopSeekState.startedAt;
         var reason = loopSeekState.reason;
         var targetMs = loopSeekState.targetMs;
+        var retryCount = loopSeekState.retryCount;
         resetLoopSeekState();
         addLoopDiagnostic('loop-seek-finish', {
             outcome: outcome,
@@ -175,10 +178,77 @@
             targetMs: targetMs,
             currentMs: Math.round(video.currentTime * 1000),
             elapsedMs: elapsedMs,
+            retryCount: retryCount,
+            paused: video.paused,
+            seeking: video.seeking,
             readyState: video.readyState,
             networkState: video.networkState,
             buffered: getBufferedRanges(video)
         });
+        if (outcome !== 'timeout' && !video.seeking) {
+            resumeLoopPlayback(video, 'seek-' + outcome);
+        }
+    }
+
+    function resumeLoopPlayback(video, reason) {
+        if (!activeSegment || !loopSession || loopSession.video !== video || !video.paused) return;
+        addLoopDiagnostic('loop-resume-start', {
+            reason: reason,
+            currentMs: Math.round(video.currentTime * 1000),
+            readyState: video.readyState,
+            networkState: video.networkState
+        });
+        try {
+            var playResult = video.play();
+            if (playResult && playResult.catch) {
+                playResult.catch(function (error) {
+                    addLoopDiagnostic('loop-play-rejected', {
+                        reason: reason,
+                        message: error && error.message || String(error)
+                    });
+                });
+            }
+        } catch (error) {
+            addLoopDiagnostic('loop-play-error', {
+                reason: reason,
+                message: error && error.message || String(error)
+            });
+        }
+    }
+
+    function scheduleLoopSeekTimeout(video) {
+        loopSeekState.timeoutId = setTimeout(function () {
+            if (!loopSeekState.inProgress || loopSeekState.video !== video) return;
+            if (loopSeekState.retryCount === 0) {
+                loopSeekState.retryCount = 1;
+                loopSeekState.startedAt = Date.now();
+                addLoopDiagnostic('loop-seek-timeout-retry', {
+                    targetMs: loopSeekState.targetMs,
+                    currentMs: Math.round(video.currentTime * 1000),
+                    paused: video.paused,
+                    seeking: video.seeking,
+                    readyState: video.readyState,
+                    networkState: video.networkState,
+                    buffered: getBufferedRanges(video)
+                });
+                try {
+                    // A tiny nudge cancels a browser seek that is stuck on the
+                    // exact same timestamp without visibly changing the range.
+                    video.currentTime = Math.max(0, (loopSeekState.targetMs + 10) / 1000);
+                    scheduleLoopSeekTimeout(video);
+                } catch (error) {
+                    addLoopDiagnostic('loop-seek-retry-error', {
+                        message: error && error.message || String(error)
+                    });
+                    finishLoopSeek(video, 'timeout');
+                    resumeLoopPlayback(video, 'seek-timeout');
+                }
+                return;
+            }
+            finishLoopSeek(video, 'timeout');
+            resumeLoopPlayback(video, 'seek-timeout');
+            showToast('循环回跳超时，已尝试恢复播放');
+        }, 2500);
     }
 
     function requestLoopSeek(video, reason) {
@@ -200,6 +270,7 @@
         loopSeekState.targetMs = segment.startMs;
         loopSeekState.startedAt = Date.now();
         loopSeekState.reason = reason;
+        loopSeekState.retryCount = 0;
         addLoopDiagnostic('loop-seek-start', {
             reason: reason,
             loopNumber: loopSession ? loopSession.loops : 0,
@@ -208,21 +279,15 @@
             segmentBuffered: isSegmentBuffered(video, segment),
             buffered: getBufferedRanges(video),
             mediaResourceDeltaSinceLastLoop: delta,
+            paused: video.paused,
             readyState: video.readyState,
             networkState: video.networkState
         });
 
-        loopSeekState.timeoutId = setTimeout(function () {
-            if (loopSeekState.inProgress && loopSeekState.video === video) {
-                finishLoopSeek(video, 'timeout');
-            }
-        }, 2500);
+        scheduleLoopSeekTimeout(video);
 
         try {
             video.currentTime = Math.max(0, segment.startMs / 1000);
-            video.play().catch(function (error) {
-                addLoopDiagnostic('loop-play-rejected', { message: error && error.message || String(error) });
-            });
             setTimeout(function () {
                 if (loopSeekState.inProgress && loopSeekState.video === video &&
                     !video.seeking && Math.abs(video.currentTime * 1000 - segment.startMs) < 100) {
@@ -796,6 +861,7 @@
         var video = event.currentTarget;
         addLoopDiagnostic('loop-media-' + event.type, {
             currentMs: Math.round(video.currentTime * 1000),
+            paused: video.paused,
             seeking: video.seeking,
             readyState: video.readyState,
             networkState: video.networkState,
@@ -828,6 +894,8 @@
             video.addEventListener('waiting', onLoopPlaybackState);
             video.addEventListener('stalled', onLoopPlaybackState);
             video.addEventListener('canplay', onLoopPlaybackState);
+            video.addEventListener('pause', onLoopPlaybackState);
+            video.addEventListener('playing', onLoopPlaybackState);
         }
     }
 
