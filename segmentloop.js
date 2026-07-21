@@ -7,6 +7,7 @@
     var markStartMs = null;
     var currentPlaybackItemId = null;
     var playbackManagerPromise = null;
+    var playbackActionsPromise = null;
     var isRendering = false;
     var renderTimer = null;
     var segmentLaunchInProgress = false;
@@ -761,33 +762,63 @@
 
     function playSegmentFromDetail(itemId, segment) {
         stopActiveLoop('replace-from-detail');
-        var video = getVideo();
-        if (video) {
-            activateSegment(itemId, segment);
-            return;
-        }
-        pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
+        pendingSegmentLaunch = {
+            itemId: itemId,
+            segmentId: segment.id,
+            time: Date.now(),
+            startPositionRequested: true
+        };
         currentPlaybackItemId = itemId;
         rememberPlaybackItemId(itemId);
-        var playButton = null;
-        var buttons = document.querySelectorAll('.btnPlay:not(.hide), .btnMainPlay:not(.hide), .btnResume:not(.hide)');
-        for (var si = 0; si < buttons.length; si++) {
-            if (isRendered(buttons[si])) {
-                playButton = buttons[si];
-                break;
-            }
-        }
-        if (playButton) {
-            segmentLaunchInProgress = true;
-            playButton.click();
-            segmentLaunchInProgress = false;
-        } else {
-            showToast('未找到播放按钮');
+        addLoopDiagnostic('segment-launch-request', {
+            itemId: itemId,
+            segmentId: segment.id,
+            startMs: segment.startMs,
+            method: 'emby-start-position'
+        });
+
+        var apiClient = window.ApiClient;
+        if (!apiClient || !apiClient.getItem || !apiClient.getCurrentUserId) {
             pendingSegmentLaunch = null;
+            addLoopDiagnostic('segment-launch-error', { message: 'ApiClient is unavailable' });
+            showToast('无法调用 Emby 播放接口');
+            return;
         }
+
+        Promise.all([
+            getPlaybackActions(),
+            apiClient.getItem(apiClient.getCurrentUserId(), itemId)
+        ]).then(function (result) {
+            var playbackActions = result[0];
+            var item = result[1];
+            if (!playbackActions || !playbackActions.play || !item) {
+                throw new Error('Emby playbackActions is unavailable');
+            }
+            var options = {
+                items: [item],
+                startPositionTicks: Math.max(0, Math.round(segment.startMs * 10000))
+            };
+            var source = document.querySelector('.selectSource');
+            var audio = document.querySelector('.selectAudio');
+            var subtitles = document.querySelector('.selectSubtitles');
+            if (source && source.value) options.mediaSourceId = source.value;
+            if (audio && audio.value !== '') options.audioStreamIndex = Number(audio.value);
+            if (subtitles && subtitles.value !== '') options.subtitleStreamIndex = Number(subtitles.value);
+            segmentLaunchInProgress = true;
+            return playbackActions.play(options);
+        }).then(function () {
+            segmentLaunchInProgress = false;
+        }).catch(function (error) {
+            segmentLaunchInProgress = false;
+            pendingSegmentLaunch = null;
+            addLoopDiagnostic('segment-launch-error', {
+                message: error && error.message || String(error)
+            });
+            showToast('片段播放启动失败');
+        });
     }
 
-    function activateSegment(itemId, segment) {
+    function activateSegment(itemId, segment, skipInitialSeek) {
         var video = getVideo();
         if (!video) {
             return;
@@ -805,9 +836,32 @@
         rememberPlaybackItemId(itemId);
         activeSegment = { itemId: itemId, segment: segment };
         startLoopSession(video, itemId, segment);
-        requestLoopSeek(video, 'activate');
+        if (skipInitialSeek) {
+            addLoopDiagnostic('segment-launch-ready', {
+                currentMs: Math.round(video.currentTime * 1000),
+                targetMs: segment.startMs,
+                readyState: video.readyState,
+                buffered: getBufferedRanges(video)
+            });
+            resumeLoopPlayback(video, 'segment-launch-ready');
+        } else {
+            requestLoopSeek(video, 'activate');
+        }
         renderOsdSegments(itemId);
         showToast('循环播放：' + segment.name);
+    }
+
+    function getPlaybackActions() {
+        if (!playbackActionsPromise) {
+            if (!window.Emby || !Emby.importModule) return Promise.resolve(null);
+            playbackActionsPromise = Emby.importModule('./modules/common/playback/playbackactions.js').then(function (module) {
+                return module.default || module;
+            }).catch(function () {
+                playbackActionsPromise = null;
+                return null;
+            });
+        }
+        return playbackActionsPromise;
     }
 
     function onVideoTimeUpdate(videoOrEvent) {
@@ -1022,10 +1076,25 @@
             return;
         }
         var segment = getItemSegments(itemId).filter(function (item) { return item.id === pendingSegmentLaunch.segmentId; })[0];
-        if (segment) {
-            pendingSegmentLaunch = null;
-            activateSegment(itemId, segment);
+        if (!segment) return;
+        var video = getVideo();
+        if (!video || !video.currentSrc || video.readyState < 2 || video.seeking) return;
+        var currentMs = video.currentTime * 1000;
+        if (pendingSegmentLaunch.startPositionRequested && Math.abs(currentMs - segment.startMs) > 2000) {
+            if (Date.now() - pendingSegmentLaunch.time > 15000) {
+                addLoopDiagnostic('segment-launch-position-mismatch', {
+                    currentMs: Math.round(currentMs),
+                    targetMs: segment.startMs,
+                    readyState: video.readyState,
+                    buffered: getBufferedRanges(video)
+                });
+                pendingSegmentLaunch = null;
+                showToast('Emby 未从片段起点开始播放，已取消循环');
+            }
+            return;
         }
+        pendingSegmentLaunch = null;
+        activateSegment(itemId, segment, true);
     }
 
     function tryAnyPendingSegment() {
