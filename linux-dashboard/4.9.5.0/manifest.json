@@ -1,0 +1,22 @@
+{
+  "sourceFile": "emby-server-deb_4.9.5.0_amd64.deb",
+  "sourceSha256": "1D718FFA0169C393DE3EAFDA65B1B057A3DB4EAD93FFEB5883ABD01735DE9843",
+  "files": {
+    "original/dashboard-ui/index.html": {
+      "size": 15045,
+      "sha256": "24E6F8713B7E00AF9DADE4A5EEFF707F9DD0EA9D472549327A119A3BEA98C9FF"
+    },
+    "original/dashboard-ui/item/item.js": {
+      "size": 122045,
+      "sha256": "3E6DABD8E622983C40DB893F9A4CE85D2B566924A862399D1FEE54579CE5C689"
+    },
+    "injected/dashboard-ui/index.html": {
+      "size": 60855,
+      "sha256": "FF2A73CFB31533A30041B2A79B14AFED3084F2F4E2C6140155B53C5112129286"
+    },
+    "injected/dashboard-ui/item/item.js": {
+      "size": 122126,
+      "sha256": "B5CBC6C9804F351D46AD7D9324ECEA01E2B529EC0994B3328F18E10ACD11B332"
+    }
+  }
+}

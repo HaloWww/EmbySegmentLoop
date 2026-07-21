@@ -8,15 +8,15 @@ set -e
 
 RAW_BASE="https://raw.githubusercontent.com/HaloWww/EmbySegmentLoop/main"
 PLUGIN_DLL="${RAW_BASE}/release/Emby.Plugins.SegmentLoop.dll"
-SEGLOOP_JS="${RAW_BASE}/segmentloop.js"
 LINUX_FILES="${RAW_BASE}/linux-files"
+INJECTED_DASHBOARD="${RAW_BASE}/linux-dashboard/4.9.5.0/injected/dashboard-ui"
 EMBY_DEB_URL="https://github.com/MediaBrowser/Emby.Releases/releases/download/4.9.5.0/emby-server-deb_4.9.5.0_amd64.deb"
 
 SYSTEM_DIR="/opt/emby-server/system"
 DASHBOARD_DIR="${SYSTEM_DIR}/dashboard-ui"
 PLUGINS_DIR="/var/lib/emby/plugins"
 INDEX_HTML="${DASHBOARD_DIR}/index.html"
-MARKER="<!-- SegmentLoop -->"
+ITEM_JS="${DASHBOARD_DIR}/item/item.js"
 
 ask() {
     local prompt="$1"
@@ -80,39 +80,19 @@ if ask "Install/update Segment Loop plugin?"; then
     echo "==> Stopping Emby Server..."
     systemctl stop emby-server || true
 
-    echo "==> Downloading plugin DLL..."
-    wget -q -O "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll" "${PLUGIN_DLL}"
+    echo "==> Downloading verified install files..."
+    TMP_SEGLOOP=$(mktemp -d)
+    CACHE_BUST=$(date +%s)
+    wget -q -O "${TMP_SEGLOOP}/Emby.Plugins.SegmentLoop.dll" "${PLUGIN_DLL}?v=${CACHE_BUST}"
+    wget -q -O "${TMP_SEGLOOP}/index.html" "${INJECTED_DASHBOARD}/index.html?v=${CACHE_BUST}"
+    wget -q -O "${TMP_SEGLOOP}/item.js" "${INJECTED_DASHBOARD}/item/item.js?v=${CACHE_BUST}"
 
-    echo "==> Downloading segmentloop.js..."
-    TMP_JS=$(mktemp)
-    wget -q -O "${TMP_JS}" "${SEGLOOP_JS}"
+    echo "==> Overwriting plugin and dashboard files..."
+    install -o emby -g emby -m 0644 "${TMP_SEGLOOP}/Emby.Plugins.SegmentLoop.dll" "${PLUGINS_DIR}/Emby.Plugins.SegmentLoop.dll"
+    install -o root -g root -m 0644 "${TMP_SEGLOOP}/index.html" "${INDEX_HTML}"
+    install -o root -g root -m 0644 "${TMP_SEGLOOP}/item.js" "${ITEM_JS}"
+    rm -rf "${TMP_SEGLOOP}"
 
-    rm -rf "${DASHBOARD_DIR}/modules/segmentloop" 2>/dev/null || true
-
-    if ask "Inject segment loop script into index.html?"; then
-        if [ -f "${INDEX_HTML}" ]; then
-            sed -i '/SegmentLoop\/ClientScript/d' "${INDEX_HTML}" 2>/dev/null || true
-            sed -i '/modules\/segmentloop/d'        "${INDEX_HTML}" 2>/dev/null || true
-            sed -i '/<!-- SegmentLoop -->/,/\/script>/d' "${INDEX_HTML}" 2>/dev/null || true
-
-            if ! grep -q "${MARKER}" "${INDEX_HTML}"; then
-                python3 -c "
-html = open('${INDEX_HTML}').read()
-js   = open('${TMP_JS}').read()
-inj  = '${MARKER}\n<script>\nwindow.EmbySegmentLoopConfig={startKey:\"[\",endKey:\"]\",captureKey:\"P\"};\n' + js + '\n</script>\n'
-open('${INDEX_HTML}','w').write(html.replace('</body>', inj + '</body>'))
-"
-                echo "==> Script injected"
-            else
-                echo "==> Already injected"
-            fi
-            chmod 644 "${INDEX_HTML}" 2>/dev/null || true
-        else
-            echo "!! index.html not found"
-        fi
-    fi
-
-    rm -f "${TMP_JS}"
     echo "==> Starting Emby Server..."
     systemctl start emby-server
 fi
