@@ -3,7 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Emby.Plugins.SegmentLoop</AssemblyName>
     <RootNamespace>Emby.Plugins.SegmentLoop</RootNamespace>
-    <Version>1.1.22.0</Version>
+    <Version>1.1.23.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>

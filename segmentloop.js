@@ -71,6 +71,11 @@
         });
     }
 
+    function isVideoReadyForSeek(video) {
+        return !!(video && video.isConnected && (video.currentSrc || video.src) &&
+            video.readyState > 0 && video.networkState !== 3);
+    }
+
     function getMediaResourceSnapshot(video) {
         var path = safeMediaPath(video && (video.currentSrc || video.src));
         var result = {
@@ -182,7 +187,7 @@
             networkState: video.networkState,
             buffered: getBufferedRanges(video)
         });
-        if (outcome !== 'timeout' && !video.seeking) {
+        if (outcome !== 'timeout' && !video.seeking && video.readyState >= 2 && isVideoReadyForSeek(video)) {
             resumeLoopPlayback(video, 'seek-' + outcome);
         }
     }
@@ -235,6 +240,17 @@
     function requestLoopSeek(video, reason) {
         if (!activeSegment || !video) return;
         if (loopSeekState.inProgress) return;
+        if (!isVideoReadyForSeek(video)) {
+            addLoopDiagnostic('loop-seek-skipped', {
+                reason: reason,
+                currentMs: Math.round((video.currentTime || 0) * 1000),
+                readyState: video.readyState,
+                networkState: video.networkState,
+                hasSource: !!(video.currentSrc || video.src)
+            });
+            stopActiveLoop('media-source-unavailable');
+            return;
+        }
 
         var segment = activeSegment.segment;
         var snapshot = getMediaResourceSnapshot(video);
@@ -270,7 +286,8 @@
             video.currentTime = Math.max(0, segment.startMs / 1000);
             setTimeout(function () {
                 if (loopSeekState.inProgress && loopSeekState.video === video &&
-                    !video.seeking && Math.abs(video.currentTime * 1000 - segment.startMs) < 100) {
+                    !video.seeking && video.readyState >= 2 && isVideoReadyForSeek(video) &&
+                    Math.abs(video.currentTime * 1000 - segment.startMs) < 100) {
                     finishLoopSeek(video, 'already-at-target');
                 }
             }, 50);
@@ -874,6 +891,17 @@
                 ? this
                 : getVideo();
         if (!video) {
+            return;
+        }
+        if (!loopSession || loopSession.video !== video) return;
+        if (!isVideoReadyForSeek(video)) {
+            addLoopDiagnostic('loop-media-unloaded', {
+                currentMs: Math.round((video.currentTime || 0) * 1000),
+                readyState: video.readyState,
+                networkState: video.networkState,
+                hasSource: !!(video.currentSrc || video.src)
+            });
+            stopActiveLoop('media-source-unavailable');
             return;
         }
         if (loopSeekState.inProgress) return;
