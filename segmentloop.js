@@ -7,7 +7,6 @@
     var markStartMs = null;
     var currentPlaybackItemId = null;
     var playbackManagerPromise = null;
-    var playbackActionsPromise = null;
     var isRendering = false;
     var renderTimer = null;
     var segmentLaunchInProgress = false;
@@ -16,286 +15,6 @@
     var loadingServerItems = {};
     var itemSegmentCache = {};
     var pendingSegmentLaunch = null;
-    var loopSeekState = {
-        inProgress: false,
-        video: null,
-        targetMs: 0,
-        startedAt: 0,
-        timeoutId: null,
-        reason: ''
-    };
-    var loopSession = null;
-    var loopDiagnostics = [];
-
-    function addLoopDiagnostic(eventName, details) {
-        var entry = {
-            time: new Date().toISOString(),
-            event: eventName,
-            details: details || {}
-        };
-        loopDiagnostics.push(entry);
-        if (loopDiagnostics.length > 200) {
-            loopDiagnostics.splice(0, loopDiagnostics.length - 200);
-        }
-        console.info('[SegmentLoop]', eventName, JSON.stringify(entry.details));
-        return entry;
-    }
-
-    function safeMediaPath(url) {
-        if (!url) return '';
-        try {
-            return new URL(url, window.location.href).pathname;
-        } catch (error) {
-            return String(url).split('?')[0];
-        }
-    }
-
-    function getBufferedRanges(video) {
-        var ranges = [];
-        if (!video || !video.buffered) return ranges;
-        for (var i = 0; i < video.buffered.length; i++) {
-            ranges.push({
-                start: Math.round(video.buffered.start(i) * 1000) / 1000,
-                end: Math.round(video.buffered.end(i) * 1000) / 1000
-            });
-        }
-        return ranges;
-    }
-
-    function isSegmentBuffered(video, segment) {
-        var start = segment.startMs / 1000;
-        var end = segment.endMs / 1000;
-        var ranges = getBufferedRanges(video);
-        return ranges.some(function (range) {
-            return range.start <= start + 0.05 && range.end >= end - 0.05;
-        });
-    }
-
-    function isVideoReadyForSeek(video) {
-        return !!(video && video.isConnected && (video.currentSrc || video.src) &&
-            video.readyState > 0 && video.networkState !== 3);
-    }
-
-    function getMediaResourceSnapshot(video) {
-        var path = safeMediaPath(video && (video.currentSrc || video.src));
-        var result = {
-            path: path,
-            requestCount: 0,
-            transferSize: 0,
-            encodedBodySize: 0,
-            decodedBodySize: 0,
-            lastStartTime: 0
-        };
-        if (!path || !window.performance || !performance.getEntriesByType) return result;
-        performance.getEntriesByType('resource').forEach(function (entry) {
-            if (safeMediaPath(entry.name) !== path) return;
-            result.requestCount += 1;
-            result.transferSize += Number(entry.transferSize) || 0;
-            result.encodedBodySize += Number(entry.encodedBodySize) || 0;
-            result.decodedBodySize += Number(entry.decodedBodySize) || 0;
-            result.lastStartTime = Math.max(result.lastStartTime, Number(entry.startTime) || 0);
-        });
-        return result;
-    }
-
-    function resourceDelta(before, after) {
-        before = before || {};
-        after = after || {};
-        return {
-            requestCount: Math.max(0, (after.requestCount || 0) - (before.requestCount || 0)),
-            transferSize: Math.max(0, (after.transferSize || 0) - (before.transferSize || 0)),
-            encodedBodySize: Math.max(0, (after.encodedBodySize || 0) - (before.encodedBodySize || 0)),
-            decodedBodySize: Math.max(0, (after.decodedBodySize || 0) - (before.decodedBodySize || 0))
-        };
-    }
-
-    function resetLoopSeekState() {
-        if (loopSeekState.timeoutId) {
-            clearTimeout(loopSeekState.timeoutId);
-        }
-        loopSeekState.inProgress = false;
-        loopSeekState.video = null;
-        loopSeekState.targetMs = 0;
-        loopSeekState.startedAt = 0;
-        loopSeekState.timeoutId = null;
-        loopSeekState.reason = '';
-    }
-
-    function stopActiveLoop(reason) {
-        if (loopSession && loopSession.video) {
-            if (loopSession.frameRequestId !== null && loopSession.video.cancelVideoFrameCallback) {
-                loopSession.video.cancelVideoFrameCallback(loopSession.frameRequestId);
-                loopSession.frameRequestId = null;
-            }
-            var finalSnapshot = getMediaResourceSnapshot(loopSession.video);
-            var finalDelta = resourceDelta(loopSession.lastResourceSnapshot, finalSnapshot);
-            loopSession.networkRequestsObserved += finalDelta.requestCount;
-            loopSession.transferBytesObserved += finalDelta.transferSize;
-            addLoopDiagnostic('loop-session-stop', {
-                reason: reason,
-                loops: loopSession.loops,
-                networkRequestsObserved: loopSession.networkRequestsObserved,
-                transferBytesObserved: loopSession.transferBytesObserved,
-                finalResourceDelta: finalDelta
-            });
-        }
-        resetLoopSeekState();
-        loopSession = null;
-        activeSegment = null;
-    }
-
-    function startLoopSession(video, itemId, segment) {
-        var snapshot = getMediaResourceSnapshot(video);
-        loopSession = {
-            video: video,
-            itemId: itemId,
-            segmentId: segment.id,
-            loops: 0,
-            networkRequestsObserved: 0,
-            transferBytesObserved: 0,
-            lastResourceSnapshot: snapshot,
-            frameRequestId: null
-        };
-        addLoopDiagnostic('loop-session-start', {
-            itemId: itemId,
-            segmentId: segment.id,
-            startMs: segment.startMs,
-            endMs: segment.endMs,
-            mediaPath: snapshot.path,
-            buffered: getBufferedRanges(video),
-            segmentBuffered: isSegmentBuffered(video, segment),
-            resourceSnapshot: snapshot
-        });
-        startLoopFrameWatch(video);
-    }
-
-    function finishLoopSeek(video, outcome) {
-        if (!loopSeekState.inProgress || loopSeekState.video !== video) return;
-        var elapsedMs = Date.now() - loopSeekState.startedAt;
-        var reason = loopSeekState.reason;
-        var targetMs = loopSeekState.targetMs;
-        resetLoopSeekState();
-        addLoopDiagnostic('loop-seek-finish', {
-            outcome: outcome,
-            reason: reason,
-            targetMs: targetMs,
-            currentMs: Math.round(video.currentTime * 1000),
-            elapsedMs: elapsedMs,
-            paused: video.paused,
-            seeking: video.seeking,
-            readyState: video.readyState,
-            networkState: video.networkState,
-            buffered: getBufferedRanges(video)
-        });
-        if (outcome !== 'timeout' && !video.seeking && video.readyState >= 2 && isVideoReadyForSeek(video)) {
-            resumeLoopPlayback(video, 'seek-' + outcome);
-        }
-    }
-
-    function resumeLoopPlayback(video, reason) {
-        if (!activeSegment || !loopSession || loopSession.video !== video || !video.paused) return;
-        addLoopDiagnostic('loop-resume-start', {
-            reason: reason,
-            currentMs: Math.round(video.currentTime * 1000),
-            readyState: video.readyState,
-            networkState: video.networkState
-        });
-        try {
-            var playResult = video.play();
-            if (playResult && playResult.catch) {
-                playResult.catch(function (error) {
-                    addLoopDiagnostic('loop-play-rejected', {
-                        reason: reason,
-                        message: error && error.message || String(error)
-                    });
-                });
-            }
-        } catch (error) {
-            addLoopDiagnostic('loop-play-error', {
-                reason: reason,
-                message: error && error.message || String(error)
-            });
-        }
-    }
-
-    function scheduleLoopSeekTimeout(video) {
-        loopSeekState.timeoutId = setTimeout(function () {
-            if (!loopSeekState.inProgress || loopSeekState.video !== video) return;
-            addLoopDiagnostic('loop-seek-timeout-abort', {
-                targetMs: loopSeekState.targetMs,
-                currentMs: Math.round(video.currentTime * 1000),
-                paused: video.paused,
-                seeking: video.seeking,
-                readyState: video.readyState,
-                networkState: video.networkState,
-                buffered: getBufferedRanges(video)
-            });
-            finishLoopSeek(video, 'timeout');
-            stopActiveLoop('seek-timeout');
-            try { video.pause(); } catch (error) { }
-            showToast('循环回跳超时，已停止循环以避免重复取流');
-        }, 2500);
-    }
-
-    function requestLoopSeek(video, reason) {
-        if (!activeSegment || !video) return;
-        if (loopSeekState.inProgress) return;
-        if (!isVideoReadyForSeek(video)) {
-            addLoopDiagnostic('loop-seek-skipped', {
-                reason: reason,
-                currentMs: Math.round((video.currentTime || 0) * 1000),
-                readyState: video.readyState,
-                networkState: video.networkState,
-                hasSource: !!(video.currentSrc || video.src)
-            });
-            stopActiveLoop('media-source-unavailable');
-            return;
-        }
-
-        var segment = activeSegment.segment;
-        var snapshot = getMediaResourceSnapshot(video);
-        var delta = loopSession ? resourceDelta(loopSession.lastResourceSnapshot, snapshot) : {};
-        if (loopSession) {
-            if (reason !== 'activate') loopSession.loops += 1;
-            loopSession.networkRequestsObserved += delta.requestCount || 0;
-            loopSession.transferBytesObserved += delta.transferSize || 0;
-            loopSession.lastResourceSnapshot = snapshot;
-        }
-
-        loopSeekState.inProgress = true;
-        loopSeekState.video = video;
-        loopSeekState.targetMs = segment.startMs;
-        loopSeekState.startedAt = Date.now();
-        loopSeekState.reason = reason;
-        addLoopDiagnostic('loop-seek-start', {
-            reason: reason,
-            loopNumber: loopSession ? loopSession.loops : 0,
-            fromMs: Math.round(video.currentTime * 1000),
-            targetMs: segment.startMs,
-            segmentBuffered: isSegmentBuffered(video, segment),
-            buffered: getBufferedRanges(video),
-            mediaResourceDeltaSinceLastLoop: delta,
-            paused: video.paused,
-            readyState: video.readyState,
-            networkState: video.networkState
-        });
-
-        scheduleLoopSeekTimeout(video);
-
-        try {
-            video.currentTime = Math.max(0, segment.startMs / 1000);
-            setTimeout(function () {
-                if (loopSeekState.inProgress && loopSeekState.video === video &&
-                    !video.seeking && video.readyState >= 2 && isVideoReadyForSeek(video) &&
-                    Math.abs(video.currentTime * 1000 - segment.startMs) < 100) {
-                    finishLoopSeek(video, 'already-at-target');
-                }
-            }, 50);
-        } catch (error) {
-            addLoopDiagnostic('loop-seek-error', { message: error && error.message || String(error) });
-            finishLoopSeek(video, 'error');
-        }
-    }
 
     function loadState() {
         try {
@@ -778,64 +497,34 @@
     }
 
     function playSegmentFromDetail(itemId, segment) {
-        stopActiveLoop('replace-from-detail');
-        pendingSegmentLaunch = {
-            itemId: itemId,
-            segmentId: segment.id,
-            time: Date.now(),
-            startPositionRequested: true
-        };
-        currentPlaybackItemId = itemId;
-        rememberPlaybackItemId(itemId);
-        addLoopDiagnostic('segment-launch-request', {
-            itemId: itemId,
-            segmentId: segment.id,
-            startMs: segment.startMs,
-            method: 'emby-start-position'
-        });
-
-        var apiClient = window.ApiClient;
-        if (!apiClient || !apiClient.getItem || !apiClient.getCurrentUserId) {
-            pendingSegmentLaunch = null;
-            addLoopDiagnostic('segment-launch-error', { message: 'ApiClient is unavailable' });
-            showToast('无法调用 Emby 播放接口');
+        activeSegment = null;
+        var video = getVideo();
+        if (video) {
+            activateSegment(itemId, segment);
             return;
         }
-
-        Promise.all([
-            getPlaybackActions(),
-            apiClient.getItem(apiClient.getCurrentUserId(), itemId)
-        ]).then(function (result) {
-            var playbackActions = result[0];
-            var item = result[1];
-            if (!playbackActions || !playbackActions.play || !item) {
-                throw new Error('Emby playbackActions is unavailable');
+        pendingSegmentLaunch = { itemId: itemId, segmentId: segment.id, time: Date.now() };
+        currentPlaybackItemId = itemId;
+        rememberPlaybackItemId(itemId);
+        var playButton = null;
+        var buttons = document.querySelectorAll('.btnPlay:not(.hide), .btnMainPlay:not(.hide), .btnResume:not(.hide)');
+        for (var si = 0; si < buttons.length; si++) {
+            if (isRendered(buttons[si])) {
+                playButton = buttons[si];
+                break;
             }
-            var options = {
-                items: [item],
-                startPositionTicks: Math.max(0, Math.round(segment.startMs * 10000))
-            };
-            var source = document.querySelector('.selectSource');
-            var audio = document.querySelector('.selectAudio');
-            var subtitles = document.querySelector('.selectSubtitles');
-            if (source && source.value) options.mediaSourceId = source.value;
-            if (audio && audio.value !== '') options.audioStreamIndex = Number(audio.value);
-            if (subtitles && subtitles.value !== '') options.subtitleStreamIndex = Number(subtitles.value);
+        }
+        if (playButton) {
             segmentLaunchInProgress = true;
-            return playbackActions.play(options);
-        }).then(function () {
+            playButton.click();
             segmentLaunchInProgress = false;
-        }).catch(function (error) {
-            segmentLaunchInProgress = false;
+        } else {
+            showToast('未找到播放按钮');
             pendingSegmentLaunch = null;
-            addLoopDiagnostic('segment-launch-error', {
-                message: error && error.message || String(error)
-            });
-            showToast('片段播放启动失败');
-        });
+        }
     }
 
-    function activateSegment(itemId, segment, skipInitialSeek) {
+    function activateSegment(itemId, segment) {
         var video = getVideo();
         if (!video) {
             return;
@@ -844,105 +533,45 @@
             return;
         }
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
-            stopActiveLoop('user-cancelled');
+            activeSegment = null;
             renderOsdSegments(itemId);
             showToast('已取消片段循环');
             return;
         }
-        stopActiveLoop('replace-active-segment');
         rememberPlaybackItemId(itemId);
         activeSegment = { itemId: itemId, segment: segment };
-        startLoopSession(video, itemId, segment);
-        if (skipInitialSeek) {
-            addLoopDiagnostic('segment-launch-ready', {
-                currentMs: Math.round(video.currentTime * 1000),
-                targetMs: segment.startMs,
-                readyState: video.readyState,
-                buffered: getBufferedRanges(video)
-            });
-            resumeLoopPlayback(video, 'segment-launch-ready');
-        } else {
-            requestLoopSeek(video, 'activate');
-        }
+        seekVideo(video, segment.startMs);
+        video.play().catch(function () {});
         renderOsdSegments(itemId);
         showToast('循环播放：' + segment.name);
     }
 
-    function getPlaybackActions() {
-        if (!playbackActionsPromise) {
-            if (!window.Emby || !Emby.importModule) return Promise.resolve(null);
-            playbackActionsPromise = Emby.importModule('./modules/common/playback/playbackactions.js').then(function (module) {
-                return module.default || module;
-            }).catch(function () {
-                playbackActionsPromise = null;
-                return null;
-            });
+    function seekVideo(video, ms) {
+        var seconds = Math.max(0, ms / 1000);
+        try {
+            if (video.fastSeek) {
+                video.fastSeek(seconds);
+            } else {
+                video.currentTime = seconds;
+            }
+        } catch (err) {
+            video.currentTime = seconds;
         }
-        return playbackActionsPromise;
     }
 
-    function onVideoTimeUpdate(videoOrEvent) {
+    function onVideoTimeUpdate() {
         if (!activeSegment) {
             return;
         }
-        var video = videoOrEvent && videoOrEvent.tagName === 'VIDEO'
-            ? videoOrEvent
-            : this && this.tagName === 'VIDEO'
-                ? this
-                : getVideo();
+        var video = getVideo();
         if (!video) {
             return;
         }
-        if (!loopSession || loopSession.video !== video) return;
-        if (!isVideoReadyForSeek(video)) {
-            addLoopDiagnostic('loop-media-unloaded', {
-                currentMs: Math.round((video.currentTime || 0) * 1000),
-                readyState: video.readyState,
-                networkState: video.networkState,
-                hasSource: !!(video.currentSrc || video.src)
-            });
-            stopActiveLoop('media-source-unavailable');
-            return;
-        }
-        if (loopSeekState.inProgress) return;
         var currentMs = video.currentTime * 1000;
-        if (currentMs >= activeSegment.segment.endMs) {
-            requestLoopSeek(video, 'segment-end');
-        } else if (currentMs < activeSegment.segment.startMs - 750) {
-            requestLoopSeek(video, 'before-segment-start');
+        if (currentMs < activeSegment.segment.startMs - 500 || currentMs >= activeSegment.segment.endMs) {
+            seekVideo(video, activeSegment.segment.startMs);
+            video.play().catch(function () {});
         }
-    }
-
-    function onLoopSeeked(event) {
-        finishLoopSeek(event.currentTarget, 'seeked');
-    }
-
-    function onLoopPlaybackState(event) {
-        if (!activeSegment || !loopSession || loopSession.video !== event.currentTarget) return;
-        var video = event.currentTarget;
-        addLoopDiagnostic('loop-media-' + event.type, {
-            currentMs: Math.round(video.currentTime * 1000),
-            paused: video.paused,
-            seeking: video.seeking,
-            readyState: video.readyState,
-            networkState: video.networkState,
-            buffered: getBufferedRanges(video),
-            resourceSnapshot: getMediaResourceSnapshot(video)
-        });
-    }
-
-    function startLoopFrameWatch(video) {
-        if (!video.requestVideoFrameCallback || !loopSession || loopSession.video !== video ||
-            loopSession.frameRequestId !== null) return;
-        var onFrame = function () {
-            if (!loopSession || loopSession.video !== video || !activeSegment || !video.isConnected) return;
-            loopSession.frameRequestId = null;
-            onVideoTimeUpdate(video);
-            if (loopSession && loopSession.video === video && activeSegment) {
-                loopSession.frameRequestId = video.requestVideoFrameCallback(onFrame);
-            }
-        };
-        loopSession.frameRequestId = video.requestVideoFrameCallback(onFrame);
     }
 
     function ensureVideoHook() {
@@ -951,12 +580,6 @@
             video.embySegmentLoopHooked = true;
             video.addEventListener('timeupdate', onVideoTimeUpdate);
             video.addEventListener('ended', onVideoTimeUpdate);
-            video.addEventListener('seeked', onLoopSeeked);
-            video.addEventListener('waiting', onLoopPlaybackState);
-            video.addEventListener('stalled', onLoopPlaybackState);
-            video.addEventListener('canplay', onLoopPlaybackState);
-            video.addEventListener('pause', onLoopPlaybackState);
-            video.addEventListener('playing', onLoopPlaybackState);
         }
     }
 
@@ -1104,25 +727,10 @@
             return;
         }
         var segment = getItemSegments(itemId).filter(function (item) { return item.id === pendingSegmentLaunch.segmentId; })[0];
-        if (!segment) return;
-        var video = getVideo();
-        if (!video || !video.currentSrc || video.readyState < 2 || video.seeking) return;
-        var currentMs = video.currentTime * 1000;
-        if (pendingSegmentLaunch.startPositionRequested && Math.abs(currentMs - segment.startMs) > 2000) {
-            if (Date.now() - pendingSegmentLaunch.time > 15000) {
-                addLoopDiagnostic('segment-launch-position-mismatch', {
-                    currentMs: Math.round(currentMs),
-                    targetMs: segment.startMs,
-                    readyState: video.readyState,
-                    buffered: getBufferedRanges(video)
-                });
-                pendingSegmentLaunch = null;
-                showToast('Emby 未从片段起点开始播放，已取消循环');
-            }
-            return;
+        if (segment) {
+            pendingSegmentLaunch = null;
+            activateSegment(itemId, segment);
         }
-        pendingSegmentLaunch = null;
-        activateSegment(itemId, segment, true);
     }
 
     function tryAnyPendingSegment() {
@@ -1134,7 +742,7 @@
         var generation = ++playbackRenderGeneration;
         ensureVideoHook();
         if (!getVideo()) {
-            stopActiveLoop('video-unavailable');
+            activeSegment = null;
             markStartMs = null;
             // Keep currentPlaybackItemId – clearing it here would forget which
             // video we were watching and prevent OSD buttons from showing when
@@ -1277,7 +885,7 @@
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
         }
-        stopActiveLoop('normal-playback-click');
+        activeSegment = null;
         markStartMs = null;
         pendingSegmentLaunch = null;
         currentPlaybackItemId = null;
@@ -1305,12 +913,7 @@
         }, 100);
     }
 
-    window.EmbySegLoop = {
-        render: renderDetailSegments,
-        renderAll: renderAll,
-        getDiagnostics: function () { return loopDiagnostics.slice(); },
-        clearDiagnostics: function () { loopDiagnostics.length = 0; }
-    };
+    window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('keydown', onKeyDown);
     new MutationObserver(function () {
@@ -1321,6 +924,7 @@
         renderTimer = setTimeout(renderAll, 150);
     }).observe(document.documentElement, { childList: true, subtree: true });
     setInterval(renderPlaybackSegments, 1500);
+    setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
     setInterval(renderAll, 500);
 
