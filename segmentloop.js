@@ -2,6 +2,7 @@
     'use strict';
 
     var storageKey = 'embySegmentLoop.v1';
+    var pluginId = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
     var rememberedItemKey = 'embySegmentLoop.currentItem';
     var activeSegment = null;
     var markStartMs = null;
@@ -15,13 +16,6 @@
     var loadingServerItems = {};
     var itemSegmentCache = {};
     var pendingSegmentLaunch = null;
-    var loopSeekVideo = null;
-    var loopSeekHandler = null;
-    var loopSeekTimer = null;
-    var loopSeekInProgress = false;
-    var shortcutConfigurationLoading = false;
-    var shortcutConfigurationLoaded = false;
-    var pluginId = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
 
     function loadState() {
         try {
@@ -56,27 +50,6 @@
         };
     }
 
-    function loadShortcutConfiguration() {
-        if (shortcutConfigurationLoaded || shortcutConfigurationLoading ||
-            typeof ApiClient === 'undefined' || !ApiClient ||
-            typeof ApiClient.getPluginConfiguration !== 'function') {
-            return;
-        }
-        shortcutConfigurationLoading = true;
-        ApiClient.getPluginConfiguration(pluginId).then(function (config) {
-            window.EmbySegmentLoopConfig = {
-                startKey: config.StartKey || '[',
-                endKey: config.EndKey || ']',
-                captureKey: config.CaptureKey || 'P'
-            };
-            shortcutConfigurationLoaded = true;
-        }).catch(function () {
-            // Keep the injected defaults and retry after Emby's API is ready.
-        }).then(function () {
-            shortcutConfigurationLoading = false;
-        });
-    }
-
     function getItemSegments(itemId) {
         if (!itemId) {
             return [];
@@ -101,7 +74,7 @@
             return copy;
         });
         itemSegmentCache[itemId] = normalized;
-        return persistItemSegments(itemId, normalized).then(function (saved) {
+        persistItemSegments(itemId, normalized).then(function (saved) {
             if (saved) {
                 removeLegacyItem(itemId);
             } else {
@@ -109,7 +82,6 @@
                 state.items[itemId] = normalized;
                 saveState(state);
             }
-            return saved;
         });
     }
 
@@ -407,20 +379,8 @@
         var segments = editingSingle ? cloneSegments([selectedSegment]) : originalSegments.slice();
         var overlay = document.createElement('div');
         overlay.className = 'embySegmentDialogOverlay';
-        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>片段编辑</h2><button type="button" class="embySegmentDialogClose paper-icon-button-light" title="取消" aria-label="关闭"><i class="md-icon">close</i></button></div><div class="embySegmentDialogBody"><div class="embySegmentHelp">时间支持秒或 HH:MM:SS.mmm，例如 83.250 或 0:01:23.250。快捷键请在 Emby 插件设置中修改。</div><div class="embySegmentEditorRows"></div><button type="button" class="embySegmentEditorAdd raised">+ 新建片段</button></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised cancel">取消</button><button type="button" class="embySegmentSave raised submit">保存</button></div></div>';
+        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>片段编辑</h2><button type="button" class="embySegmentDialogClose" title="取消">&#xe5cd;</button></div><div class="embySegmentDialogBody"><div class="embySegmentHelp">时间支持秒或 HH:MM:SS.mmm，例如 83.250 或 0:01:23.250。快捷键请在 Emby 插件设置中修改。</div><div class="embySegmentEditorRows"></div><button type="button" class="embySegmentEditorAdd raised">+ 新建片段</button></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised cancel">取消</button><button type="button" class="embySegmentSave raised submit">保存</button></div></div>';
         document.body.appendChild(overlay);
-
-        function syncRowsToSegments() {
-            var byId = {};
-            segments.forEach(function (segment) { byId[String(segment.id)] = segment; });
-            Array.prototype.slice.call(overlay.querySelectorAll('.embySegmentEditorRow')).forEach(function (row) {
-                var segment = byId[row.dataset.segmentId];
-                if (!segment) return;
-                segment.name = row.querySelector('.embySegmentName').value;
-                segment.startText = row.querySelector('.embySegmentStart').value;
-                segment.endText = row.querySelector('.embySegmentEnd').value;
-            });
-        }
 
         function renderRows() {
             var rows = overlay.querySelector('.embySegmentEditorRows');
@@ -429,14 +389,12 @@
                 var row = document.createElement('div');
                 row.className = 'embySegmentEditorRow';
                 row.dataset.index = String(index);
-                row.dataset.segmentId = String(segment.id);
-                row.innerHTML = '<label><span>名称</span><input class="embySegmentName" value=""></label><label><span>开始</span><input class="embySegmentStart" value=""></label><label><span>结束</span><input class="embySegmentEnd" value=""></label><button type="button" class="embySegmentDelete paper-icon-button-light" title="删除" aria-label="删除片段"><i class="md-icon">delete</i></button>';
+                row.innerHTML = '<label><span>名称</span><input class="embySegmentName" value=""></label><label><span>开始</span><input class="embySegmentStart" value=""></label><label><span>结束</span><input class="embySegmentEnd" value=""></label><button type="button" class="embySegmentDelete" title="删除">&#xe872;</button>';
                 row.querySelector('.embySegmentName').value = segment.name || ('片段 ' + (index + 1));
-                row.querySelector('.embySegmentStart').value = segment.startText != null ? segment.startText : formatTime(segment.startMs);
-                row.querySelector('.embySegmentEnd').value = segment.endText != null ? segment.endText : formatTime(segment.endMs);
+                row.querySelector('.embySegmentStart').value = formatTime(segment.startMs);
+                row.querySelector('.embySegmentEnd').value = formatTime(segment.endMs);
                 row.querySelector('.embySegmentDelete').onclick = function () {
-                    syncRowsToSegments();
-                    segments = segments.filter(function (item) { return String(item.id) !== row.dataset.segmentId; });
+                    segments.splice(index, 1);
                     renderRows();
                 };
                 rows.appendChild(row);
@@ -448,7 +406,6 @@
             addButton.classList.add('hide');
         }
         addButton.onclick = function () {
-            syncRowsToSegments();
             var order = segments.reduce(function (max, segment, index) {
                 return Math.max(max, getSegmentOrder(segment, index));
             }, 0) + 1;
@@ -462,50 +419,34 @@
             renderRows();
         };
         overlay.querySelector('.embySegmentSave').onclick = function () {
-            syncRowsToSegments();
             var newSegments = editingSingle ? originalSegments.filter(function (segment) {
                 return segment.id !== selectedSegment.id;
             }) : [];
             var invalid = false;
-            var rowsById = {};
-            Array.prototype.slice.call(overlay.querySelectorAll('.embySegmentEditorRow')).forEach(function (row) {
-                rowsById[row.dataset.segmentId] = row;
-                row.classList.remove('embySegmentInvalid');
-            });
-            segments.forEach(function (segment, index) {
-                var row = rowsById[String(segment.id)];
-                if (!row) return;
-                var startMs = parseTime(segment.startText);
-                var endMs = parseTime(segment.endText);
+            Array.prototype.slice.call(overlay.querySelectorAll('.embySegmentEditorRow')).forEach(function (row, index) {
+                var startMs = parseTime(row.querySelector('.embySegmentStart').value);
+                var endMs = parseTime(row.querySelector('.embySegmentEnd').value);
                 if (!isFinite(startMs) || !isFinite(endMs) || endMs <= startMs) {
                     invalid = true;
                     row.classList.add('embySegmentInvalid');
                     return;
                 }
                 newSegments.push({
-                    id: segment.id || String(Date.now() + index),
-                    name: String(segment.name || '').trim() || ('片段 ' + (index + 1)),
+                    id: segments[index].id || String(Date.now() + index),
+                    name: row.querySelector('.embySegmentName').value.trim() || ('片段 ' + (index + 1)),
                     startMs: startMs,
                     endMs: endMs,
-                    order: getSegmentOrder(segment, index)
+                    order: getSegmentOrder(segments[index], index)
                 });
             });
             if (invalid) {
                 showToast('请修正无效片段时间');
                 return;
             }
-            var saveButton = overlay.querySelector('.embySegmentSave');
-            saveButton.disabled = true;
-            setItemSegments(itemId, newSegments).then(function (saved) {
-                saveButton.disabled = false;
-                if (!saved) {
-                    showToast('数据库保存失败，请重试');
-                    return;
-                }
-                closeEditor();
-                renderAll();
-                showToast('片段设置已保存');
-            });
+            setItemSegments(itemId, newSegments);
+            closeEditor();
+            renderAll();
+            showToast('片段设置已保存');
         };
         overlay.querySelector('.embySegmentCancel').onclick = closeEditor;
         overlay.querySelector('.embySegmentDialogClose').onclick = closeEditor;
@@ -562,71 +503,29 @@
         }
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
             activeSegment = null;
-            clearLoopSeekState();
             renderOsdSegments(itemId);
             showToast('已取消片段循环');
             return;
         }
-        clearLoopSeekState();
         rememberPlaybackItemId(itemId);
         activeSegment = { itemId: itemId, segment: segment };
-        seekVideo(video, segment.startMs, true);
+        seekVideo(video, segment.startMs);
+        video.play().catch(function () {});
         renderOsdSegments(itemId);
         showToast('循环播放：' + segment.name);
     }
 
-    function isVideoReady(video) {
-        return !!(video && video.isConnected && (video.currentSrc || video.src) &&
-            video.readyState > 0 && video.networkState !== 3);
-    }
-
-    function clearLoopSeekState() {
-        if (loopSeekVideo && loopSeekHandler) {
-            loopSeekVideo.removeEventListener('seeked', loopSeekHandler);
-        }
-        if (loopSeekTimer) {
-            clearTimeout(loopSeekTimer);
-        }
-        loopSeekVideo = null;
-        loopSeekHandler = null;
-        loopSeekTimer = null;
-        loopSeekInProgress = false;
-    }
-
-    function seekVideo(video, ms, resumeAfterSeek) {
-        if (!isVideoReady(video) || loopSeekInProgress) {
-            return false;
-        }
+    function seekVideo(video, ms) {
         var seconds = Math.max(0, ms / 1000);
-        if (Math.abs(video.currentTime - seconds) < 0.05) {
-            if (resumeAfterSeek && activeSegment) {
-                video.play().catch(function () {});
-            }
-            return true;
-        }
-        loopSeekInProgress = true;
-        loopSeekVideo = video;
-
-        var finish = function () {
-            if (!loopSeekInProgress || loopSeekVideo !== video) return;
-            clearLoopSeekState();
-            if (resumeAfterSeek && activeSegment && isVideoReady(video)) {
-                video.play().catch(function () {});
-            }
-        };
-        loopSeekHandler = finish;
-        video.addEventListener('seeked', finish);
-        loopSeekTimer = setTimeout(finish, 1500);
-
         try {
-            // fastSeek is intentionally avoided: it may land on an earlier
-            // keyframe and repeatedly retrigger the segment boundary logic.
-            video.currentTime = seconds;
+            if (video.fastSeek) {
+                video.fastSeek(seconds);
+            } else {
+                video.currentTime = seconds;
+            }
         } catch (err) {
-            clearLoopSeekState();
-            return false;
+            video.currentTime = seconds;
         }
-        return true;
     }
 
     function onVideoTimeUpdate() {
@@ -635,19 +534,12 @@
         }
         var video = getVideo();
         if (!video) {
-            activeSegment = null;
-            clearLoopSeekState();
             return;
         }
-        if (!isVideoReady(video)) {
-            activeSegment = null;
-            clearLoopSeekState();
-            return;
-        }
-        if (loopSeekInProgress || video.seeking) return;
         var currentMs = video.currentTime * 1000;
-        if (currentMs >= activeSegment.segment.endMs) {
-            seekVideo(video, activeSegment.segment.startMs, true);
+        if (currentMs < activeSegment.segment.startMs - 500 || currentMs >= activeSegment.segment.endMs) {
+            seekVideo(video, activeSegment.segment.startMs);
+            video.play().catch(function () {});
         }
     }
 
@@ -820,7 +712,6 @@
         ensureVideoHook();
         if (!getVideo()) {
             activeSegment = null;
-            clearLoopSeekState();
             markStartMs = null;
             // Keep currentPlaybackItemId – clearing it here would forget which
             // video we were watching and prevent OSD buttons from showing when
@@ -964,7 +855,6 @@
             return;
         }
         activeSegment = null;
-        clearLoopSeekState();
         markStartMs = null;
         pendingSegmentLaunch = null;
         currentPlaybackItemId = null;
@@ -982,12 +872,61 @@
         document.head.appendChild(style);
     }
 
+    function openPluginSettingsDialog() {
+        var old = document.querySelector('.embySegPluginSettingsOverlay');
+        if (old) { old.remove(); }
+        var overlay = document.createElement('div');
+        overlay.className = 'embySegmentDialogOverlay embySegPluginSettingsOverlay';
+        overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>\u5feb\u6377\u952e\u8bbe\u7f6e</h2><button type="button" class="embySegmentDialogClose" title="\u5173\u95ed">&#xe5cd;</button></div><div class="embySegmentDialogBody"><div class="embySegPluginField"><label class="embySegPluginLabel">\u5f00\u59cb\u5feb\u6377\u952e</label><input class="embySegPluginInput" id="slgStart" type="text" placeholder="["><div class="embySegPluginDesc">\u9ed8\u8ba4 [\u3002\u586b\u5199 KeyboardEvent.key \u7684\u503c\u3002</div></div><div class="embySegPluginField"><label class="embySegPluginLabel">\u7ed3\u675f\u5feb\u6377\u952e</label><input class="embySegPluginInput" id="slgEnd" type="text" placeholder="]"><div class="embySegPluginDesc">\u9ed8\u8ba4 ]\u3002\u4fdd\u5b58\u540e\u5237\u65b0 Web \u9875\u9762\u751f\u6548\u3002</div></div><div class="embySegPluginField"><label class="embySegPluginLabel">\u7247\u6bb5\u6570\u636e\u5e93\u8def\u5f84</label><input class="embySegPluginInput" id="slgPath" type="text" placeholder="\u7559\u7a7a\u4f7f\u7528\u9ed8\u8ba4\u8def\u5f84"><div class="embySegPluginDesc">\u7559\u7a7a\u65f6\u4fdd\u5b58\u5230 programdata/metadata/segmentloop/segments.db\u3002</div></div></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised">\u53d6\u6d88</button><button type="button" class="embySegmentSave raised">\u4fdd\u5b58</button></div></div>';
+        document.body.appendChild(overlay);
+        if (typeof ApiClient !== 'undefined') {
+            ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
+                var s = document.getElementById('slgStart'), e = document.getElementById('slgEnd'), p = document.getElementById('slgPath');
+                if (s) s.value = cfg.StartKey || '[';
+                if (e) e.value = cfg.EndKey || ']';
+                if (p && cfg.StoragePath != null) p.value = cfg.StoragePath;
+            });
+        }
+        var closeDialog = function () { overlay.remove(); };
+        overlay.querySelector('.embySegmentDialogClose').onclick = closeDialog;
+        overlay.querySelector('.embySegmentCancel').onclick = closeDialog;
+        overlay.onclick = function (e) { if (e.target === overlay) closeDialog(); };
+        overlay.querySelector('.embySegmentSave').onclick = function () {
+            var s = document.getElementById('slgStart'), e = document.getElementById('slgEnd'), p = document.getElementById('slgPath');
+            var sk = s && s.value || '[', ek = e && e.value || ']', pt = p && p.value || '';
+            if (typeof ApiClient === 'undefined') { closeDialog(); return; }
+            ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
+                cfg.StartKey = sk; cfg.EndKey = ek; cfg.StoragePath = pt;
+                return ApiClient.updatePluginConfiguration(pluginId, cfg);
+            }).then(function () {
+                closeDialog();
+                showToast('\u5df2\u4fdd\u5b58\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u8ba9\u5feb\u6377\u952e\u914d\u7f6e\u751f\u6548');
+            });
+        };
+    }
+
+    function renderSettingsItem() {
+        var routes = document.querySelector('.dynamicRoutes');
+        if (!routes || !routes.children.length) { return; }
+        if (routes.querySelector('.embySegLoopSettingsItem')) { return; }
+        var item = document.createElement('a');
+        item.className = 'navMenuOption navMenuOption-settings embySegLoopSettingsItem';
+        item.href = 'javascript:void(0)';
+        item.innerHTML =
+            '<div class="settingsMenuListItemBody settingsMenuListItemBody-extrapadding">' +
+            '<i class="md-icon navMenuOption-icon" style="font-family:Material Icons,Arial">&#xe227;</i>' +
+            '<div class="navMenuOption-text">Segment Loop</div>' +
+            '</div>';
+        item.onclick = function (e) { e.preventDefault(); openPluginSettingsDialog(); };
+        routes.appendChild(item);
+    }
+
     function renderAll() {
         isRendering = true;
-        loadShortcutConfiguration();
         injectStyle();
         renderDetailSegments();
         renderPlaybackSegments();
+        renderSettingsItem();
         setTimeout(function () {
             isRendering = false;
         }, 100);
@@ -1004,6 +943,7 @@
         renderTimer = setTimeout(renderAll, 150);
     }).observe(document.documentElement, { childList: true, subtree: true });
     setInterval(renderPlaybackSegments, 1500);
+    setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
     setInterval(renderAll, 500);
 

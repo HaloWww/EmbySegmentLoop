@@ -12,6 +12,7 @@ internal sealed class SegmentRepository
     private const int OpenFullMutex = 0x00010000;
     private static readonly object Sync = new();
     private static string _databasePath = string.Empty;
+    private static Dictionary<string, List<SegmentRecord>> _memoryCache = new();
 
     public static SegmentRepository Instance { get; } = new();
 
@@ -29,6 +30,29 @@ internal sealed class SegmentRepository
         {
             using var db = Open();
         }
+        LoadAllIntoMemory();
+    }
+
+    private void LoadAllIntoMemory()
+    {
+        try
+        {
+            lock (Sync)
+            {
+                using var db = Open();
+                db.Exec("CREATE TABLE IF NOT EXISTS segments (item_id TEXT NOT NULL, segment_id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, sort_order INTEGER NOT NULL)");
+                using var statement = db.Prepare("SELECT item_id,segment_id,name,start_ms,end_ms,sort_order FROM segments ORDER BY item_id,sort_order");
+                var all = new Dictionary<string, List<SegmentRecord>>();
+                while (statement.Step() == Row)
+                {
+                    var itemId = statement.Text(0);
+                    if (!all.TryGetValue(itemId, out var list)) { list = new(); all[itemId] = list; }
+                    list.Add(new SegmentRecord { Id = statement.Text(1), Name = statement.Text(2), StartMs = statement.Int64(3), EndMs = statement.Int64(4), Order = checked((int)statement.Int64(5)) });
+                }
+                _memoryCache = all;
+            }
+        }
+        catch { /* SQLite unavailable – cache stays empty */ }
     }
 
     public List<SegmentRecord> Get(string itemId)
@@ -36,22 +60,7 @@ internal sealed class SegmentRepository
         if (string.IsNullOrWhiteSpace(itemId)) return new();
         lock (Sync)
         {
-            using var db = Open();
-            using var statement = db.Prepare("SELECT segment_id,name,start_ms,end_ms,sort_order FROM segments WHERE item_id=? ORDER BY sort_order,segment_id");
-            statement.BindText(1, itemId);
-            var result = new List<SegmentRecord>();
-            while (statement.Step() == Row)
-            {
-                result.Add(new SegmentRecord
-                {
-                    Id = statement.Text(0),
-                    Name = statement.Text(1),
-                    StartMs = statement.Int64(2),
-                    EndMs = statement.Int64(3),
-                    Order = checked((int)statement.Int64(4))
-                });
-            }
-            return result;
+            return _memoryCache.TryGetValue(itemId, out var list) ? list.ToList() : new();
         }
     }
 
@@ -82,6 +91,7 @@ internal sealed class SegmentRepository
                     insert.Reset();
                 }
                 db.Exec("COMMIT");
+                _memoryCache[itemId] = segments.ToList();
             }
             catch
             {

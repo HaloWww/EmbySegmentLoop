@@ -40,11 +40,6 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
                 MenuSection = "server",
                 MenuIcon = "repeat",
                 DisplayName = "Segment Loop"
-            },
-            new PluginPageInfo
-            {
-                Name = "segmentloopconfigjs1118",
-                EmbeddedResourcePath = GetType().Namespace + ".config.js"
             }
         };
     }
