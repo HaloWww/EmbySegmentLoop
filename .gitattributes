@@ -1,1 +1,6 @@
 *.deb filter=lfs diff=lfs merge=lfs -text
+*.sh text eol=lf
+*.py text eol=lf
+linux-dashboard/*/original/** -text
+linux-dashboard/*/injected/** -text
+release/dashboard-ui/** -text

@@ -16,11 +16,13 @@
 EmbySegmentLoop/
 ├── EmbySegmentLoop.csproj    # 项目文件 (.NET 8)
 ├── Plugin.cs                 # 插件主类 + 配置模型
-├── EntryPoint.cs             # 启动入口：注入前端脚本到 dashboard-ui
+├── EntryPoint.cs             # 启动入口：数据库初始化及 Windows 前端注入
 ├── ConfigurationPage.cs      # 插件设置页 HTML
 ├── SegmentRepository.cs      # SQLite 数据库操作 (P/Invoke)
 ├── SegmentLoopService.cs     # REST API：片段的 GET/POST
 ├── segmentloop.js            # 前端脚本（嵌入 DLL 资源）
+├── build_linux_dashboard.py  # 从官方 DEB 生成原版/注入版 Linux UI
+├── linux-dashboard/          # Linux 原版文件、注入文件及 SHA-256 清单
 ├── build-release.ps1         # 构建+打包脚本
 ├── .gitignore
 └── README.md
@@ -32,7 +34,7 @@ EmbySegmentLoop/
 |------|------|
 | Emby Server | 4.9.x |
 | .NET SDK | 8.0 |
-| Windows | 目前仅 Windows（SQLite P/Invoke 使用 win-x64） |
+| Windows / Linux | .NET 8；Linux 前端文件对应 Emby 4.9.5.0 DEB |
 
 ## 快速构建
 
@@ -63,19 +65,39 @@ dotnet publish -c Release -o .\publish
 ```
 
 `build-release.ps1` 会自动检测 `T:\dotnet-sdk-8.0.422-win-x64\dotnet.exe`，找不到时回退到系统 PATH 中的 `dotnet`。
+构建前会强制从 `T:\emby-server-deb_4.9.5.0_amd64.deb` 重新提取原版
+Linux dashboard 文件并生成注入版，避免在已经修改过的文件上重复注入。
 
 构建产物：
 - `release\Emby.Plugins.SegmentLoop.dll` — 插件 DLL
+- `release\dashboard-ui` — 可直接覆盖的 Linux dashboard 文件
 - `Emby.Plugins.SegmentLoop-{version}.zip` — 发布包
 
 ## 安装
 
-### 方式一：ZIP 发布包
+### Linux（Emby 4.9.5.0）
+
+运行：
+
+```bash
+sudo bash install-debian.sh
+```
+
+安装脚本下载 DLL、清单和已经生成好的注入文件，校验文件大小及 SHA-256
+后直接覆盖：
+
+- `/opt/emby-server/system/dashboard-ui/index.html`
+- `/opt/emby-server/system/dashboard-ui/item/item.js`
+- `/var/lib/emby/plugins/Emby.Plugins.SegmentLoop.dll`
+
+NAS 上不再使用 `sed` 或临时 Python 修改 Emby 压缩文件。
+
+### Windows / ZIP 发布包
 
 1. 解压 ZIP，将 `Emby.Plugins.SegmentLoop.dll` 复制到 Emby Server 的 `programdata\plugins` 目录。
 2. 重启 Emby Server。
 
-### 方式二：开发者直接安装
+### Windows 开发者直接安装
 
 ```powershell
 Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\programdata\plugins" -Force
@@ -87,17 +109,16 @@ Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\prog
 
 ### 插件启动
 
-`EntryPoint.Run()` 在 Emby 启动时执行：
-
-1. 从 DLL 内嵌资源读取 `segmentloop.js`，写入 `dashboard-ui\modules\segmentloop\segmentloop.js`。
-2. 生成快捷键配置文件 `dashboard-ui\modules\segmentloop\segmentloop.config.js`。
-3. 在 `dashboard-ui\index.html` 的 `</body>` 前注入两行 `<script>` 引用。
-4. 初始化 SQLite 数据库。
+`EntryPoint.Run()` 始终初始化 SQLite 数据库。Windows 保留 `c4ca5aa`
+原有的 DLL 启动注入方式；Linux 不在 Emby 启动时修改系统文件，改由安装包
+直接覆盖从官方 DEB 生成并校验过的文件。
 
 ### 前端注入
 
-- `segmentloop.config.js`：暴露 `window.EmbySegmentLoopConfig`，包含快捷键配置。
-- `segmentloop.js`：注入详情页片段列表、播放界面片段按钮、快捷键监听、片段编辑弹窗、循环播放控制。
+- `linux-dashboard/4.9.5.0/original`：从官方 DEB 逐字节提取的原文件。
+- `linux-dashboard/4.9.5.0/injected`：只在对应原文件中加入插件脚本和详情页刷新 hook。
+- `manifest.json`：记录 DEB、原文件和注入文件的大小及 SHA-256。
+- Linux 前端通过插件配置 API 读取快捷键，保存设置后刷新 Web 页面即可生效。
 
 ### 数据存储
 
@@ -147,6 +168,12 @@ Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\prog
 
 ## 版本历史
 
+### v1.1.18.1
+- 播放、编辑、存储逻辑回退并保持为 `c4ca5aa` 版本。
+- Linux 注入文件从 Emby 4.9.5.0 官方 DEB 生成。
+- 仓库同时保存原版文件、注入版文件和 SHA-256 清单。
+- Linux 安装改为校验后直接覆盖，不再现场修改 Emby 文件。
+
 ### v1.1.1
 - 片段排序改为自然序号
 - 增强播放页 itemId 识别（直接播放也能显示片段按钮）
@@ -168,7 +195,7 @@ MIT
 
 ## 注意事项
 
-- 修改插件 DLL 后必须重启 Emby Server，入口点才会重新注入前端脚本。
-- Emby 版本升级后，插件会自动在启动时重新注入，通常无需额外操作。
-- 前端脚本不修改 Emby 压缩后的核心 JS 文件，仅在 `index.html` 中增加两行引用。
+- Linux 上 DLL 与 `dashboard-ui` 覆盖文件必须作为同一版本一起安装。
+- Emby 升级会覆盖 dashboard 文件；新版本必须从对应官方安装包重新生成注入版。
+- 仓库中的 `original` 文件可用于核对或恢复 Emby 4.9.5.0 原始 dashboard。
 - 如果播放界面没有显示片段按钮，尝试 `Ctrl+F5` 强制刷新浏览器缓存。
