@@ -5,3 +5,5 @@ publish/
 *.suo
 *.zip
 .vs/
+__pycache__/
+*.pyc

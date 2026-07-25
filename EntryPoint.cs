@@ -2,22 +2,41 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Model.Logging;
+using MediaBrowser.Model.Tasks;
 
 namespace Emby.Plugins.SegmentLoop;
 
 public sealed class EntryPoint : IServerEntryPoint, IDisposable
 {
     private readonly IApplicationPaths _applicationPaths;
+    private readonly ILibraryManager _libraryManager;
+    private readonly ITaskManager _taskManager;
+    private readonly ILogger _logger;
+    private bool _subscribed;
+    private static EntryPoint? _instance;
 
-    public EntryPoint(IApplicationPaths applicationPaths)
+    public EntryPoint(
+        IApplicationPaths applicationPaths,
+        ILibraryManager libraryManager,
+        ITaskManager taskManager,
+        ILogger logger)
     {
         _applicationPaths = applicationPaths;
+        _libraryManager = libraryManager;
+        _taskManager = taskManager;
+        _logger = logger;
     }
 
     public void Run()
     {
         try { SegmentRepository.Instance.EnsureCreated(); } catch { }
+        _instance = this;
+        _libraryManager.ItemRemoved += OnItemRemoved;
+        _subscribed = true;
+        ApplyCleanupSchedule();
         if (OperatingSystem.IsWindows())
         {
             WriteClientConfiguration(
@@ -27,7 +46,81 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
         }
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        if (_subscribed)
+        {
+            _libraryManager.ItemRemoved -= OnItemRemoved;
+            _subscribed = false;
+        }
+        if (ReferenceEquals(_instance, this)) _instance = null;
+    }
+
+    public static void UpdateCleanupSchedule()
+    {
+        _instance?.ApplyCleanupSchedule();
+    }
+
+    private void ApplyCleanupSchedule()
+    {
+        try
+        {
+            var worker = _taskManager.ScheduledTasks.FirstOrDefault(
+                value => string.Equals(
+                    value.ScheduledTask.Key,
+                    SegmentCleanupTask.TaskKey,
+                    StringComparison.Ordinal));
+            if (worker == null)
+            {
+                _logger.Warn("Segment Loop cleanup scheduled task was not found.");
+                return;
+            }
+
+            var hours = Plugin.Instance?.Configuration.CleanupIntervalHours ?? 24;
+            worker.Triggers = hours <= 0
+                ? Array.Empty<TaskTriggerInfo>()
+                : new[]
+                {
+                    new TaskTriggerInfo
+                    {
+                        Type = TaskTriggerInfo.TriggerInterval,
+                        IntervalTicks = TimeSpan.FromHours(hours).Ticks
+                    }
+                };
+            worker.ReloadTriggerEvents();
+            _logger.Info(
+                hours <= 0
+                    ? "Segment Loop automatic orphan cleanup is disabled."
+                    : "Segment Loop orphan cleanup interval set to {0} hours.",
+                hours);
+        }
+        catch (Exception error)
+        {
+            _logger.ErrorException("Failed to update Segment Loop cleanup schedule.", error);
+        }
+    }
+
+    private void OnItemRemoved(object? sender, ItemChangeEventArgs eventArgs)
+    {
+        try
+        {
+            var item = eventArgs.Item;
+            if (item == null) return;
+            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                item.InternalId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.Id.ToString("D"),
+                item.Id.ToString("N")
+            };
+            if (!string.IsNullOrWhiteSpace(item.IdString)) ids.Add(item.IdString);
+            SegmentRepository.Instance.DeleteItemIds(ids);
+            _logger.Debug("Segment Loop removed segment records for deleted item {0}.", item.InternalId);
+        }
+        catch (Exception error)
+        {
+            _logger.ErrorException("Failed to remove Segment Loop records for a deleted item.", error);
+        }
+    }
 
     public static void WriteClientConfiguration(
         IApplicationPaths applicationPaths,

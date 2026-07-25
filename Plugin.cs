@@ -51,8 +51,13 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
+        if (configuration is PluginConfiguration typed)
+        {
+            typed.CleanupIntervalHours = Math.Clamp(typed.CleanupIntervalHours, 0, 8760);
+        }
         base.UpdateConfiguration(configuration);
         ConfigureRepository(Configuration);
+        EntryPoint.UpdateCleanupSchedule();
         if (OperatingSystem.IsWindows())
         {
             EntryPoint.WriteClientConfiguration(ApplicationPaths, Configuration);
@@ -78,4 +83,5 @@ public sealed class PluginConfiguration : BasePluginConfiguration
     public string EndKey { get; set; } = "]";
     public string CaptureKey { get; set; } = "P";
     public string StoragePath { get; set; } = string.Empty;
+    public int CleanupIntervalHours { get; set; } = 24;
 }

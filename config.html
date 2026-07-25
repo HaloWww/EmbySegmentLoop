@@ -3,7 +3,8 @@
         .segmentLoopConfigPage{min-height:100%;box-sizing:border-box;color:inherit}
         .segmentLoopConfigPage .segmentLoopContent{box-sizing:border-box;width:100%;max-width:54em;margin:0 auto;padding:2rem 1rem}
         .segmentLoopConfigPage .segmentLoopCard{margin:0;padding:0;background:transparent}
-        .segmentLoopConfigPage h2{margin:0 0 1.4rem;color:inherit;font-weight:500}
+        .segmentLoopConfigPage h2{margin:0 0 .35rem;color:inherit;font-weight:500}
+        .segmentLoopConfigPage .segmentLoopVersion{margin:0 0 1.4rem;color:inherit;opacity:.68;font-size:.92rem}
         .segmentLoopConfigPage .inputContainer{margin-bottom:1.2rem}
         .segmentLoopConfigPage label{display:block;margin-bottom:.4rem;color:inherit;font-weight:600}
         .segmentLoopConfigPage input{box-sizing:border-box;width:100%;font:inherit}
@@ -15,10 +16,12 @@
     <div data-role="content" class="segmentLoopContent">
         <form class="segmentLoopForm segmentLoopCard auto-center padded-top fieldsets">
             <h2>Segment Loop</h2>
+            <div class="segmentLoopVersion">插件版本：<span class="slVersion">读取中…</span></div>
             <div class="inputContainer fieldset-field"><label for="slStart">片段开始快捷键</label><input id="slStart" class="slStart emby-input" value="[" /><div class="fieldDescription">默认：[。填写浏览器 KeyboardEvent.key 的值。</div></div>
             <div class="inputContainer fieldset-field"><label for="slEnd">片段结束快捷键</label><input id="slEnd" class="slEnd emby-input" value="]" /><div class="fieldDescription">默认：]。</div></div>
             <div class="inputContainer fieldset-field"><label for="slCapture">截取海报快捷键</label><input id="slCapture" class="slCapture emby-input" value="P" /><div class="fieldDescription">播放时按此键截取海报画面。</div></div>
             <div class="inputContainer fieldset-field"><label for="slPath">片段数据库文件</label><input id="slPath" class="slPath emby-input" placeholder="留空使用 Emby 元数据目录" /><div class="fieldDescription">留空时使用 metadata/segmentloop/segments.db。修改路径不会自动搬移旧数据库。</div></div>
+            <div class="inputContainer fieldset-field"><label for="slCleanupInterval">无效片段清理间隔（小时）</label><input id="slCleanupInterval" class="slCleanupInterval emby-input" type="number" min="0" max="8760" step="1" value="24" /><div class="fieldDescription">默认24小时。视频从 Emby 删除时会立即清理；此任务定期删除因外部删文件或媒体库重建产生的孤立片段。填写0关闭自动定时清理。</div></div>
             <button type="submit" class="segmentLoopSave raised button-submit">保存</button>
             <div class="segmentLoopStatus" role="status" aria-live="polite"></div>
         </form>

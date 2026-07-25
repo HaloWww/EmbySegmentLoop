@@ -57,6 +57,23 @@ define([], function () {
             showStatus('操作失败，请检查 Emby 日志或浏览器控制台。', true);
         }
 
+        function loadVersion(apiClient) {
+            var versionElement = page.querySelector('.slVersion');
+            if (!versionElement || typeof apiClient.getInstalledPlugins !== 'function') return;
+            apiClient.getInstalledPlugins().then(function (plugins) {
+                var plugin = (plugins || []).filter(function (item) {
+                    var id = item.Id || item.Guid || item.id || item.guid || '';
+                    return String(id).toLowerCase() === pluginId;
+                })[0];
+                versionElement.textContent = plugin && (plugin.Version || plugin.version)
+                    ? String(plugin.Version || plugin.version)
+                    : '未知';
+            }).catch(function (error) {
+                console.error('Segment Loop version query failed', error);
+                versionElement.textContent = '读取失败';
+            });
+        }
+
         function load() {
             var apiClient;
             try {
@@ -68,11 +85,14 @@ define([], function () {
 
             setLoading(true);
             showStatus('');
+            loadVersion(apiClient);
             apiClient.getPluginConfiguration(pluginId).then(function (config) {
                 page.querySelector('.slStart').value = config.StartKey || '[';
                 page.querySelector('.slEnd').value = config.EndKey || ']';
                 page.querySelector('.slCapture').value = config.CaptureKey || 'P';
                 page.querySelector('.slPath').value = config.StoragePath || '';
+                var cleanupHours = Number(config.CleanupIntervalHours);
+                page.querySelector('.slCleanupInterval').value = isFinite(cleanupHours) ? cleanupHours : 24;
                 finishLoading();
             }).catch(fail);
         }
@@ -95,6 +115,10 @@ define([], function () {
                 config.EndKey = page.querySelector('.slEnd').value || ']';
                 config.CaptureKey = page.querySelector('.slCapture').value || 'P';
                 config.StoragePath = page.querySelector('.slPath').value.trim();
+                var cleanupHours = parseInt(page.querySelector('.slCleanupInterval').value, 10);
+                config.CleanupIntervalHours = isFinite(cleanupHours)
+                    ? Math.max(0, Math.min(8760, cleanupHours))
+                    : 24;
                 return apiClient.updatePluginConfiguration(pluginId, config).then(function () {
                     window.EmbySegmentLoopConfig = {
                         startKey: config.StartKey,

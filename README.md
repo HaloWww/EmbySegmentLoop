@@ -20,8 +20,10 @@ EmbySegmentLoop/
 ├── ConfigurationPage.cs      # 插件设置页 HTML
 ├── SegmentRepository.cs      # SQLite 数据库操作 (P/Invoke)
 ├── SegmentLoopService.cs     # REST API：片段的 GET/POST
+├── SegmentCleanupTask.cs     # 删除事件监听配套的定时孤立记录清理
 ├── segmentloop.js            # 前端脚本（嵌入 DLL 资源）
 ├── build_linux_dashboard.py  # 从官方 DEB 生成原版/注入版 Linux UI
+├── remux_bad_mp4s.py         # Linux 视频容器检查与安全重封装工具
 ├── linux-dashboard/          # Linux 原版文件、注入文件及 SHA-256 清单
 ├── build-release.ps1         # 构建+打包脚本
 ├── .gitignore
@@ -137,6 +139,7 @@ Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\prog
 | 片段开始快捷键 | `[` | 播放时按下标记片段起始点 |
 | 片段结束快捷键 | `]` | 播放时按下标记片段结束点 |
 | 片段数据库文件 | 空（使用默认路径）| SQLite 数据库存储路径 |
+| 无效片段清理间隔 | `24` 小时 | 定期清理媒体库中已不存在的 ItemId；设为0关闭定时清理 |
 
 修改快捷键后保存，刷新 Emby Web 页面生效。
 
@@ -166,7 +169,118 @@ Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\prog
 - 再次点击当前循环的片段按钮。
 - 或者点击 Emby 原生播放/继续播放按钮，自动清除循环。
 
+## 视频容器检查与修复工具
+
+仓库根目录的 `remux_bad_mp4s.py` 用于检查可能造成 Emby 直接播放反复读取、
+播放卡死或 BIF 预览缩略图时间错误的视频容器。此工具仅面向 Linux/NAS，
+需要 Python 3.9+、FFmpeg、FFprobe、GNU `stat`/`sync`，默认路径分别为：
+
+```text
+/usr/bin/ffmpeg
+/usr/bin/ffprobe
+/dev/shm
+/var/lib/segmentloop-remux/scan-cache.sqlite3
+```
+
+### 下载到 NAS
+
+```bash
+curl -fL \
+  https://raw.githubusercontent.com/HaloWww/EmbySegmentLoop/main/remux_bad_mp4s.py \
+  -o /home/wangzhendong/remux_bad_mp4s.py
+chmod +x /home/wangzhendong/remux_bad_mp4s.py
+```
+
+### 只检查，不修改
+
+```bash
+python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW" --dry-run
+```
+
+### 检查并修复
+
+替换原视频需要 root 权限。脚本优先把完整临时输出写入 `/dev/shm`，校验通过并
+确认写入完成后才替换源文件：
+
+```bash
+sudo python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW"
+```
+
+脚本默认只修复已确认的音视频包间距异常，以及会导致 Emby 4.9.5 BIF 时间错误的
+QuickTime `qt` + 尾置 `moov` 组合。要同时修复普通 MP4 的单纯 `moov` 尾置：
+
+```bash
+sudo python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW" --fix-moov-only
+```
+
+### 内存不足时使用磁盘临时目录
+
+```bash
+sudo python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW" \
+  --fallback-temp-dir "/vol00/segmentloop-remux-temp"
+```
+
+只有 `/dev/shm` 剩余空间小于“源文件大小 + 256 MiB”时才使用备用目录。脚本持有
+独占锁并严格逐个处理文件；上一个文件完成校验、替换、`fsync` 和 `sync -f`
+之后才会开始下一个文件，避免叠瓦盘多文件并发写入。
+
+### 扫描缓存、失败记录和重新检查
+
+正常文件和已成功替换的文件会按路径、大小、修改时间、设备及 inode 记录到
+SQLite，下次运行时不会再次读取完整媒体内容。
+
+查看指定目录下的失败文件和完整原因：
+
+```bash
+python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW" --list-failures
+```
+
+重新处理文件内容未变化的历史失败项：
+
+```bash
+sudo python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW" --retry-failed
+```
+
+忽略全部缓存，对指定目录执行全局重新检查：
+
+```bash
+sudo python3 /home/wangzhendong/remux_bad_mp4s.py \
+  "/vol00/HSH721414ALN6M0/NSFW" --recheck-all
+```
+
+可以用 `--state-file /自定义路径/scan-cache.sqlite3` 修改记录库位置。若只希望
+全局复查而不修改文件，可以组合使用 `--recheck-all --dry-run`。
+
+### 重封装与安全策略
+
+- 首先使用 `-map 0 -c copy` 复制全部媒体流，不转码视频。
+- MP4 因 `pcm_f32le` 等源音频编码不受容器支持而失败时，才保持视频及其他流
+  复制，仅把音频转换为 AAC 320 kbps。
+- 临时输出必须通过时长、流数量、流类型、视频编码、`moov` 位置及 BIF 兼容性
+  校验，之后才允许替换原文件。
+- 临时重封装失败时原视频不变并继续下一个文件；原视频替换阶段失败时尝试回滚，
+  然后立即停止整个批处理，避免继续产生磁盘写入。
+- 退出码 `0` 表示全部成功，`1` 表示存在检查或临时重封装失败，`2` 表示原视频
+  替换/写入阶段失败并已停止后续处理。
+
+查看所有参数：
+
+```bash
+python3 /home/wangzhendong/remux_bad_mp4s.py --help
+```
+
 ## 版本历史
+
+### v1.1.19.0
+- 监听 Emby `ItemRemoved` 事件，视频删除时立即按数字 ItemId/GUID 清理片段。
+- 增加“清理无效视频片段”计划任务，定期删除媒体库中已不存在的孤立记录。
+- 插件设置页可配置清理间隔，默认24小时，设为0关闭自动定时清理。
 
 ### v1.1.18.1
 - 播放、编辑、存储逻辑回退并保持为 `c4ca5aa` 版本。

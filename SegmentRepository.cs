@@ -91,6 +91,52 @@ internal sealed class SegmentRepository
         }
     }
 
+    public List<string> GetItemIds()
+    {
+        lock (Sync)
+        {
+            using var db = Open();
+            using var statement = db.Prepare("SELECT DISTINCT item_id FROM segments ORDER BY item_id");
+            var result = new List<string>();
+            while (statement.Step() == Row)
+            {
+                result.Add(statement.Text(0));
+            }
+            return result;
+        }
+    }
+
+    public void DeleteItemIds(IEnumerable<string> itemIds)
+    {
+        var ids = itemIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (ids.Length == 0) return;
+
+        lock (Sync)
+        {
+            using var db = Open();
+            db.Exec("BEGIN IMMEDIATE");
+            try
+            {
+                using var delete = db.Prepare("DELETE FROM segments WHERE item_id=?");
+                foreach (var itemId in ids)
+                {
+                    delete.BindText(1, itemId);
+                    delete.ExpectDone();
+                    delete.Reset();
+                }
+                db.Exec("COMMIT");
+            }
+            catch
+            {
+                db.Exec("ROLLBACK");
+                throw;
+            }
+        }
+    }
+
     private static Database Open()
     {
         if (string.IsNullOrWhiteSpace(_databasePath)) throw new InvalidOperationException("Segment database path is not configured.");
