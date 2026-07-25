@@ -17,7 +17,18 @@
     var pendingSegmentLaunch = null;
     var shortcutConfigurationLoading = false;
     var shortcutConfigurationLoaded = false;
+    var bifThumbnailCache = {};
+    var bifThumbnailCacheOrder = [];
+    var bifThumbnailPromises = {};
+    var bifMediaSourceCache = {};
+    var bifMediaSourcePromises = {};
+    var bifPreviewHoverTimer = null;
+    var bifPreviewPlaybackTimer = null;
+    var bifPreviewRequestId = 0;
+    var bifPreviewTarget = null;
     var pluginId = '8c1e7ca2-3f07-4b62-a4d1-929f07509367';
+    var bifPreviewFrameDelayMs = 650;
+    var bifPreviewWidth = 360;
 
     function loadState() {
         try {
@@ -358,6 +369,325 @@
         return segment.name + '  ' + formatTime(segment.startMs) + '-' + formatTime(segment.endMs);
     }
 
+    function getBifMediaSourceId(itemId) {
+        return getPlaybackManager().then(function (playbackManager) {
+            if (!playbackManager || !playbackManager.getPlayerState) return null;
+            try {
+                var state = playbackManager.getPlayerState();
+                var currentItem = state && state.NowPlayingItem;
+                var mediaSource = state && state.MediaSource;
+                if (currentItem && String(currentItem.Id) === String(itemId) && mediaSource && mediaSource.Id) {
+                    return String(mediaSource.Id);
+                }
+            } catch (err) {}
+            return null;
+        }).then(function (activeMediaSourceId) {
+            if (activeMediaSourceId) {
+                bifMediaSourceCache[itemId] = activeMediaSourceId;
+                return activeMediaSourceId;
+            }
+            if (Object.prototype.hasOwnProperty.call(bifMediaSourceCache, itemId)) {
+                return bifMediaSourceCache[itemId];
+            }
+            if (bifMediaSourcePromises[itemId]) return bifMediaSourcePromises[itemId];
+            if (typeof ApiClient === 'undefined' || !ApiClient ||
+                typeof ApiClient.getItem !== 'function' ||
+                typeof ApiClient.getCurrentUserId !== 'function') {
+                return null;
+            }
+            bifMediaSourcePromises[itemId] = ApiClient.getItem(
+                ApiClient.getCurrentUserId(),
+                itemId
+            ).then(function (item) {
+                var sources = item && Array.isArray(item.MediaSources) ? item.MediaSources : [];
+                return sources.length && sources[0].Id ? String(sources[0].Id) : null;
+            }).catch(function () {
+                return null;
+            }).then(function (mediaSourceId) {
+                bifMediaSourceCache[itemId] = mediaSourceId;
+                delete bifMediaSourcePromises[itemId];
+                return mediaSourceId;
+            });
+            return bifMediaSourcePromises[itemId];
+        });
+    }
+
+    function normalizeBifThumbnailSet(result, mediaSourceId) {
+        var thumbnails = result && Array.isArray(result.Thumbnails) ? result.Thumbnails : [];
+        var frames = thumbnails.map(function (thumbnail) {
+            return {
+                positionTicks: Number(thumbnail.PositionTicks != null ? thumbnail.PositionTicks : thumbnail.positionTicks) || 0,
+                imageTag: thumbnail.ImageTag || thumbnail.imageTag || ''
+            };
+        }).filter(function (thumbnail) {
+            return thumbnail.imageTag;
+        }).sort(function (a, b) {
+            return a.positionTicks - b.positionTicks;
+        });
+        return {
+            aspectRatio: Number(result && (result.AspectRatio || result.aspectRatio)) || 16 / 9,
+            mediaSourceId: mediaSourceId || null,
+            frames: frames
+        };
+    }
+
+    function cacheBifThumbnailSet(key, value, lifetimeMs) {
+        bifThumbnailCache[key] = {
+            value: value,
+            expires: Date.now() + lifetimeMs
+        };
+        bifThumbnailCacheOrder = bifThumbnailCacheOrder.filter(function (savedKey) {
+            return savedKey !== key;
+        });
+        bifThumbnailCacheOrder.push(key);
+        while (bifThumbnailCacheOrder.length > 16) {
+            delete bifThumbnailCache[bifThumbnailCacheOrder.shift()];
+        }
+    }
+
+    function getBifThumbnailSet(itemId) {
+        if (typeof ApiClient === 'undefined' || !ApiClient ||
+            typeof ApiClient.getThumbnails !== 'function') {
+            return Promise.resolve(null);
+        }
+        return getBifMediaSourceId(itemId).then(function (mediaSourceId) {
+            var key = String(itemId) + '|' + String(mediaSourceId || '');
+            var cached = bifThumbnailCache[key];
+            if (cached && cached.expires > Date.now()) return cached.value;
+            if (bifThumbnailPromises[key]) return bifThumbnailPromises[key];
+            var options = { Width: bifPreviewWidth };
+            if (mediaSourceId) options.MediaSourceId = mediaSourceId;
+            bifThumbnailPromises[key] = ApiClient.getThumbnails(itemId, options).then(function (result) {
+                var value = normalizeBifThumbnailSet(result, mediaSourceId);
+                cacheBifThumbnailSet(
+                    key,
+                    value,
+                    value.frames.length ? 30 * 60 * 1000 : 60 * 1000
+                );
+                return value;
+            }).catch(function (error) {
+                console.debug('Segment Loop: BIF thumbnail set unavailable', error);
+                cacheBifThumbnailSet(key, null, 30 * 1000);
+                return null;
+            }).then(function (value) {
+                delete bifThumbnailPromises[key];
+                return value;
+            });
+            return bifThumbnailPromises[key];
+        });
+    }
+
+    function getSegmentBifFrames(thumbnailSet, segment) {
+        var frames = thumbnailSet && thumbnailSet.frames || [];
+        if (!frames.length) return [];
+        var startTicks = Math.max(0, Number(segment.startMs) || 0) * 10000;
+        var endTicks = Math.max(startTicks, Math.max(0, Number(segment.endMs) || 0) * 10000);
+        var beforeStart = null;
+        var selected = [];
+        frames.forEach(function (frame) {
+            if (frame.positionTicks <= startTicks) beforeStart = frame;
+            if (frame.positionTicks >= startTicks && frame.positionTicks < endTicks) {
+                selected.push(frame);
+            }
+        });
+        if (beforeStart && (!selected.length || selected[0].positionTicks !== beforeStart.positionTicks)) {
+            selected.unshift(beforeStart);
+        }
+        if (!selected.length) {
+            var closest = frames.reduce(function (best, frame) {
+                return !best || Math.abs(frame.positionTicks - startTicks) <
+                    Math.abs(best.positionTicks - startTicks) ? frame : best;
+            }, null);
+            if (closest) selected.push(closest);
+        }
+        if (selected.length > 80) {
+            var sampled = [];
+            var step = (selected.length - 1) / 79;
+            for (var index = 0; index < 80; index++) {
+                var frame = selected[Math.round(index * step)];
+                if (!sampled.length || sampled[sampled.length - 1] !== frame) sampled.push(frame);
+            }
+            selected = sampled;
+        }
+        return selected;
+    }
+
+    function getBifFrameUrl(itemId, thumbnailSet, frame) {
+        if (!frame || !frame.imageTag || typeof ApiClient === 'undefined' ||
+            !ApiClient || typeof ApiClient.getImageUrl !== 'function') {
+            return null;
+        }
+        var options = {
+            maxWidth: bifPreviewWidth,
+            quality: 90,
+            tag: frame.imageTag,
+            type: 'Thumbnail',
+            PositionTicks: frame.positionTicks
+        };
+        if (thumbnailSet.mediaSourceId) options.MediaSourceId = thumbnailSet.mediaSourceId;
+        return ApiClient.getImageUrl(itemId, options);
+    }
+
+    function ensureBifPreviewElement() {
+        var preview = document.querySelector('.embySegmentBifPreview');
+        if (preview) return preview;
+        preview = document.createElement('div');
+        preview.className = 'embySegmentBifPreview';
+        preview.setAttribute('role', 'tooltip');
+        preview.setAttribute('aria-hidden', 'true');
+        preview.innerHTML = '<div class="embySegmentBifViewport"><img class="embySegmentBifImage" alt=""><div class="embySegmentBifStatus">正在读取 BIF 预览…</div><div class="embySegmentBifFrameTime"></div></div><div class="embySegmentBifInfo"><div class="embySegmentBifName"></div><div class="embySegmentBifRange"></div></div>';
+        document.body.appendChild(preview);
+        return preview;
+    }
+
+    function positionBifPreview(preview, target) {
+        if (!preview || !target || !target.isConnected) return;
+        var targetRect = target.getBoundingClientRect();
+        var previewRect = preview.getBoundingClientRect();
+        var gap = 10;
+        var left = targetRect.left + targetRect.width / 2 - previewRect.width / 2;
+        left = Math.max(8, Math.min(left, window.innerWidth - previewRect.width - 8));
+        var top = targetRect.top - previewRect.height - gap;
+        if (top < 8) top = Math.min(window.innerHeight - previewRect.height - 8, targetRect.bottom + gap);
+        preview.style.left = Math.round(left) + 'px';
+        preview.style.top = Math.max(8, Math.round(top)) + 'px';
+    }
+
+    function stopBifPreviewAnimation() {
+        clearTimeout(bifPreviewPlaybackTimer);
+        bifPreviewPlaybackTimer = null;
+    }
+
+    function hideBifPreview(target) {
+        if (target && bifPreviewTarget && target !== bifPreviewTarget) return;
+        clearTimeout(bifPreviewHoverTimer);
+        bifPreviewHoverTimer = null;
+        stopBifPreviewAnimation();
+        bifPreviewRequestId++;
+        bifPreviewTarget = null;
+        var preview = document.querySelector('.embySegmentBifPreview');
+        if (preview) {
+            preview.classList.remove('visible');
+            preview.setAttribute('aria-hidden', 'true');
+            var image = preview.querySelector('.embySegmentBifImage');
+            image.onload = null;
+            image.onerror = null;
+            image.removeAttribute('src');
+        }
+    }
+
+    function playBifPreviewFrames(preview, target, itemId, thumbnailSet, frames, requestId) {
+        var image = preview.querySelector('.embySegmentBifImage');
+        var status = preview.querySelector('.embySegmentBifStatus');
+        var frameTime = preview.querySelector('.embySegmentBifFrameTime');
+        var frameIndex = 0;
+        stopBifPreviewAnimation();
+
+        function showNextFrame() {
+            if (requestId !== bifPreviewRequestId || bifPreviewTarget !== target ||
+                !target.isConnected || !preview.classList.contains('visible')) {
+                return;
+            }
+            var frame = frames[frameIndex];
+            var url = getBifFrameUrl(itemId, thumbnailSet, frame);
+            if (!url) {
+                status.textContent = 'BIF 预览帧不可用';
+                status.classList.remove('hide');
+                return;
+            }
+            image.onload = function () {
+                if (requestId !== bifPreviewRequestId) return;
+                image.classList.add('ready');
+                status.classList.add('hide');
+            };
+            image.onerror = function () {
+                if (requestId !== bifPreviewRequestId) return;
+                image.classList.remove('ready');
+                status.textContent = 'BIF 预览帧读取失败';
+                status.classList.remove('hide');
+            };
+            image.src = url;
+            frameTime.textContent = formatTime(frame.positionTicks / 10000);
+            var nextFrame = frames[frameIndex + 1];
+            var nextUrl = nextFrame && getBifFrameUrl(itemId, thumbnailSet, nextFrame);
+            if (nextUrl && nextUrl !== url) {
+                var preload = new Image();
+                preload.src = nextUrl;
+            }
+            frameIndex++;
+            if (frameIndex < frames.length) {
+                bifPreviewPlaybackTimer = setTimeout(showNextFrame, bifPreviewFrameDelayMs);
+            }
+        }
+
+        showNextFrame();
+    }
+
+    function showBifPreview(target) {
+        if (!target || !target.isConnected || !target._embySegmentPreviewData) return;
+        var data = target._embySegmentPreviewData;
+        var itemId = data.itemId;
+        var segment = data.segment;
+        var requestId = ++bifPreviewRequestId;
+        bifPreviewTarget = target;
+        stopBifPreviewAnimation();
+        var preview = ensureBifPreviewElement();
+        var viewport = preview.querySelector('.embySegmentBifViewport');
+        var image = preview.querySelector('.embySegmentBifImage');
+        var status = preview.querySelector('.embySegmentBifStatus');
+        var frameTime = preview.querySelector('.embySegmentBifFrameTime');
+        image.classList.remove('ready');
+        image.removeAttribute('src');
+        status.textContent = '正在读取 BIF 预览…';
+        status.classList.remove('hide');
+        frameTime.textContent = '';
+        preview.querySelector('.embySegmentBifName').textContent = segment.name || '未命名片段';
+        preview.querySelector('.embySegmentBifRange').textContent =
+            formatTime(segment.startMs) + ' — ' + formatTime(segment.endMs);
+        viewport.style.aspectRatio = String(16 / 9);
+        preview.classList.add('visible');
+        preview.setAttribute('aria-hidden', 'false');
+        positionBifPreview(preview, target);
+
+        getBifThumbnailSet(itemId).then(function (thumbnailSet) {
+            if (requestId !== bifPreviewRequestId || bifPreviewTarget !== target ||
+                !target.isConnected) {
+                return;
+            }
+            var frames = getSegmentBifFrames(thumbnailSet, segment);
+            if (!thumbnailSet || !frames.length) {
+                status.textContent = '该视频尚未生成 BIF 预览';
+                status.classList.remove('hide');
+                frameTime.textContent = '';
+                return;
+            }
+            viewport.style.aspectRatio = String(thumbnailSet.aspectRatio || 16 / 9);
+            positionBifPreview(preview, target);
+            playBifPreviewFrames(preview, target, itemId, thumbnailSet, frames, requestId);
+        });
+    }
+
+    function scheduleBifPreview(target) {
+        clearTimeout(bifPreviewHoverTimer);
+        if (bifPreviewTarget && bifPreviewTarget !== target) hideBifPreview();
+        bifPreviewHoverTimer = setTimeout(function () {
+            bifPreviewHoverTimer = null;
+            showBifPreview(target);
+        }, 220);
+    }
+
+    function bindBifPreview(target, itemId, segment) {
+        target._embySegmentPreviewData = { itemId: String(itemId), segment: segment };
+        target.removeAttribute('title');
+        target.setAttribute('aria-label', segmentLabel(segment));
+        if (target._embySegmentPreviewBound) return;
+        target._embySegmentPreviewBound = true;
+        target.addEventListener('mouseenter', function () { scheduleBifPreview(target); });
+        target.addEventListener('mouseleave', function () { hideBifPreview(target); });
+        target.addEventListener('focus', function () { scheduleBifPreview(target); });
+        target.addEventListener('blur', function () { hideBifPreview(target); });
+    }
+
     function cloneSegments(segments) {
         return (Array.isArray(segments) ? segments : []).map(function (segment, index) {
             return {
@@ -634,7 +964,9 @@
         ensureItemLoaded(itemId).then(function () {
             if (!host.isConnected || host.getAttribute('data-segitem') !== itemId) return;
             var segments = getItemSegments(itemId);
-            var key = segments.map(function (s) { return s.id; }).join(',');
+            var key = segments.map(function (s) {
+                return [s.id, s.name, s.startMs, s.endMs, s.order].join(':');
+            }).join(',');
             if (host.getAttribute('data-segkey') === key) return;
             host.setAttribute('data-segkey', key);
             host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
@@ -647,7 +979,7 @@
                 button.type = 'button';
                 button.className = 'embySegmentChip raised';
                 button.textContent = segment.name || '未命名片段';
-                button.title = segmentLabel(segment);
+                bindBifPreview(button, itemId, segment);
                 button.onclick = function () { playSegmentFromDetail(itemId, segment); };
                 var edit = document.createElement('button');
                 edit.type = 'button';
@@ -726,7 +1058,7 @@
                 host.appendChild(btn);
             }
             btn.textContent = segment.name;
-            btn.title = segmentLabel(segment);
+            bindBifPreview(btn, itemId, segment);
             var isActive = activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id;
             if (isActive) {
                 btn.classList.add('active');
@@ -905,6 +1237,9 @@
     }
 
     function onDocumentClick(e) {
+        var segmentButton = e.target && e.target.closest &&
+            e.target.closest('.embySegmentChip, .embySegmentOsdChip');
+        if (segmentButton) hideBifPreview(segmentButton);
         var playButton = e.target && e.target.closest && e.target.closest('.btnResume, .btnMainPlay, .btnPlay, .cardOverlayButton-fab, .cardOverlayFab-primary, [data-action="play"], [data-action="resume"], [data-action="playallfromhere"]');
         if (!playButton || playButton.closest('.embySegmentDetailList') || segmentLaunchInProgress) {
             return;
@@ -924,11 +1259,13 @@
         style.id = 'embySegmentLoopStyle';
         style.textContent = '.embySegmentDetailList{margin-top:.7em}.embySegmentTitle{font-weight:600;margin-bottom:.35em}.embySegmentRows{display:flex;gap:.45em;flex-wrap:wrap;align-items:center}.embySegmentChipWrap{display:inline-flex;align-items:center;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden}.embySegmentChip,.embySegmentAdd,.embySegmentSettings,.embySegmentGear,.embySegmentOsdChip{border:0;color:inherit;background:rgba(255,255,255,.16);border-radius:999px;padding:.55em .9em;cursor:pointer}.embySegmentDelete,.embySegmentDialogClose{font-family:Material Icons,Material Icons Round,Arial}.embySegmentGear{font-size:.9em;border-radius:0;padding:.55em .8em;background:rgba(255,255,255,.08)}.embySegmentChip{border-radius:999px 0 0 999px;background:transparent}.embySegmentAdd,.embySegmentSettings,.embySegmentSave{background:#43a047;color:#fff}.embySegmentOsdList{display:flex;gap:.4em;flex-wrap:wrap;justify-content:center;margin:.25em 0 .55em}.embySegmentOsdChip{font-size:.9em;background:rgba(0,0,0,.45);backdrop-filter:blur(8px)}.embySegmentOsdChip.active{background:#43a047;color:#fff}.embySegmentToast{position:fixed;left:50%;bottom:12%;transform:translateX(-50%);z-index:999999;background:rgba(0,0,0,.84);color:#fff;border-radius:999px;padding:.75em 1.1em;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35)}.embySegmentDialogOverlay{position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:2rem}.embySegmentDialog{width:min(920px,96vw);max-height:92vh;display:flex;flex-direction:column;background:#202020;color:#fff;border-radius:.35rem;box-shadow:0 18px 55px rgba(0,0,0,.55);overflow:hidden}.embySegmentDialogHeader,.embySegmentDialogFooter{display:flex;align-items:center;padding:1.1rem 1.4rem;background:#262626}.embySegmentDialogHeader{justify-content:space-between}.embySegmentDialogHeader h2{font-size:1.45rem;margin:0;font-weight:500}.embySegmentDialogClose,.embySegmentDelete{border:0;background:transparent;color:inherit;cursor:pointer}.embySegmentDialogClose{font-size:28px}.embySegmentDialogBody{padding:1.2rem 1.4rem;overflow:auto}.embySegmentDialogFooter{justify-content:flex-end;gap:.7rem}.embySegmentFieldGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:.7rem}.embySegmentFieldGrid label,.embySegmentEditorRow label{display:flex;flex-direction:column;gap:.35rem;color:rgba(255,255,255,.72);font-size:.88rem}.embySegmentFieldGrid input,.embySegmentEditorRow input{box-sizing:border-box;width:100%;background:#151515;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:.25rem;padding:.7rem .75rem;font:inherit}.embySegmentFieldGrid input:focus,.embySegmentEditorRow input:focus{outline:0;border-color:#43a047}.embySegmentHelp{color:rgba(255,255,255,.62);font-size:.9rem;margin:.25rem 0 1rem}.embySegmentEditorRows{display:flex;flex-direction:column;gap:.65rem;margin-bottom:1rem}.embySegmentEditorRow{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:.75rem;align-items:end;padding:.85rem;background:rgba(255,255,255,.06);border-radius:.35rem;border:1px solid transparent}.embySegmentEditorRow.embySegmentInvalid{border-color:#d32f2f}.embySegmentDelete{font-size:24px;height:2.7rem;width:2.7rem;border-radius:50%;background:rgba(255,255,255,.08)}.embySegmentEditorAdd,.embySegmentCancel,.embySegmentSave{border:0;border-radius:.25rem;padding:.65rem 1rem;color:inherit;cursor:pointer}.embySegmentCancel{background:rgba(255,255,255,.12)}@media(max-width:700px){.embySegmentDialogOverlay{padding:.75rem}.embySegmentFieldGrid,.embySegmentEditorRow{grid-template-columns:1fr}.embySegmentSettings{width:100%}.embySegmentChip{max-width:70vw;overflow:hidden;text-overflow:ellipsis}}';
         style.textContent += '.embySegmentOsdList{position:relative;z-index:2;pointer-events:auto}.embySegmentOsdChip{pointer-events:auto;touch-action:manipulation}';
+        style.textContent += '.embySegmentBifPreview{position:fixed;z-index:1000001;width:min(360px,calc(100vw - 16px));overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:.45rem;background:#181818;color:#fff;box-shadow:0 12px 38px rgba(0,0,0,.58);opacity:0;visibility:hidden;transform:translateY(5px) scale(.985);transform-origin:center bottom;transition:opacity .12s ease,transform .12s ease,visibility 0s linear .12s;pointer-events:none}.embySegmentBifPreview.visible{opacity:1;visibility:visible;transform:none;transition-delay:0s}.embySegmentBifViewport{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;background:#080808}.embySegmentBifImage{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .12s ease}.embySegmentBifImage.ready{opacity:1}.embySegmentBifStatus{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:1rem;color:rgba(255,255,255,.7);font-size:.86rem;text-align:center;background:linear-gradient(135deg,rgba(255,255,255,.025),rgba(255,255,255,.07))}.embySegmentBifStatus.hide{display:none}.embySegmentBifFrameTime{position:absolute;right:.45rem;bottom:.4rem;padding:.18rem .38rem;border-radius:.2rem;background:rgba(0,0,0,.72);font-size:.75rem;font-variant-numeric:tabular-nums}.embySegmentBifInfo{display:flex;align-items:center;justify-content:space-between;gap:.8rem;padding:.65rem .75rem}.embySegmentBifName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.embySegmentBifRange{flex:0 0 auto;color:rgba(255,255,255,.68);font-size:.78rem;font-variant-numeric:tabular-nums}@media(max-width:460px){.embySegmentBifInfo{display:block}.embySegmentBifRange{margin-top:.22rem}}';
         document.head.appendChild(style);
     }
 
     function renderAll() {
         isRendering = true;
+        if (bifPreviewTarget && !bifPreviewTarget.isConnected) hideBifPreview();
         loadShortcutConfiguration();
         injectStyle();
         renderDetailSegments();
@@ -941,6 +1278,8 @@
     window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('scroll', function () { hideBifPreview(); }, true);
+    window.addEventListener('resize', function () { hideBifPreview(); });
     new MutationObserver(function () {
         if (isRendering) {
             return;
