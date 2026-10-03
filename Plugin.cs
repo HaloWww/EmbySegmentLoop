@@ -24,6 +24,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     }
 
     public static Plugin? Instance { get; private set; }
+    internal void ConfigureStorage() => ConfigureRepository(Configuration);
     public override string Name => "Segment Loop";
     public override string Description => "Video segment capture and loop playback.";
     public override Guid Id => PluginId;
@@ -43,7 +44,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             },
             new PluginPageInfo
             {
-                Name = "segmentloopconfigjs1118",
+                Name = "segmentloopconfigjs1123",
                 EmbeddedResourcePath = GetType().Namespace + ".config.js"
             }
         };
@@ -54,6 +55,8 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         if (configuration is PluginConfiguration typed)
         {
             typed.CleanupIntervalHours = Math.Clamp(typed.CleanupIntervalHours, 0, 8760);
+            if (typed.CardHighlightMode is not ("None" or "Favorites" or "Segments" or "Both"))
+                typed.CardHighlightMode = "Both";
         }
         base.UpdateConfiguration(configuration);
         ConfigureRepository(Configuration);
@@ -84,4 +87,5 @@ public sealed class PluginConfiguration : BasePluginConfiguration
     public string CaptureKey { get; set; } = "P";
     public string StoragePath { get; set; } = string.Empty;
     public int CleanupIntervalHours { get; set; } = 24;
+    public string CardHighlightMode { get; set; } = "Both";
 }

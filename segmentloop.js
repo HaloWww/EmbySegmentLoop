@@ -5,8 +5,12 @@
     var rememberedItemKey = 'embySegmentLoop.currentItem';
     var activeSegment = null;
     var markStartMs = null;
+    var markStartItemId = null;
+    var hookedVideo = null;
     var currentPlaybackItemId = null;
     var playbackManagerPromise = null;
+    var resolvedPlaybackManager = null;
+    var loopSeekPending = false;
     var isRendering = false;
     var renderTimer = null;
     var segmentLaunchInProgress = false;
@@ -14,9 +18,18 @@
     var loadedServerItems = {};
     var loadingServerItems = {};
     var itemSegmentCache = {};
+    var itemSavePromises = {};
+    var itemRevisions = {};
+    var detailInfoCache = {};
+    var detailInfoPromises = {};
+    var cardHighlightCache = {};
+    var cardHighlightRequest = null;
+    var cardHighlightContext = null;
+    var cardHighlightGeneration = 0;
     var pendingSegmentLaunch = null;
     var shortcutConfigurationLoading = false;
     var shortcutConfigurationLoaded = false;
+    var shortcutConfigurationRetryAt = 0;
     var bifThumbnailCache = {};
     var bifThumbnailCacheOrder = [];
     var bifThumbnailPromises = {};
@@ -32,7 +45,8 @@
 
     function loadState() {
         try {
-            return JSON.parse(localStorage.getItem(storageKey)) || defaultState();
+            var state = JSON.parse(localStorage.getItem(storageKey));
+            return state && typeof state === 'object' && !Array.isArray(state) ? state : defaultState();
         } catch (err) {
             return defaultState();
         }
@@ -45,7 +59,8 @@
     }
 
     function saveState(state) {
-        localStorage.setItem(storageKey, JSON.stringify(state));
+        try { localStorage.setItem(storageKey, JSON.stringify(state)); }
+        catch (error) { console.warn('Segment Loop: browser storage unavailable', error); }
     }
 
     function getState() {
@@ -65,20 +80,22 @@
 
     function loadShortcutConfiguration() {
         if (shortcutConfigurationLoaded || shortcutConfigurationLoading ||
+            Date.now() < shortcutConfigurationRetryAt ||
             typeof ApiClient === 'undefined' || !ApiClient ||
-            typeof ApiClient.getPluginConfiguration !== 'function') {
+            typeof ApiClient.getJSON !== 'function') {
             return;
         }
         shortcutConfigurationLoading = true;
-        ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+        ApiClient.getJSON(ApiClient.getUrl('SegmentLoop/ClientConfiguration')).then(function (config) {
             window.EmbySegmentLoopConfig = {
                 startKey: config.StartKey || '[',
                 endKey: config.EndKey || ']',
-                captureKey: config.CaptureKey || 'P'
+                captureKey: config.CaptureKey || 'P',
+                cardHighlightMode: config.CardHighlightMode || 'Both'
             };
             shortcutConfigurationLoaded = true;
         }).catch(function () {
-            // Keep the injected defaults and retry after Emby's API is ready.
+            shortcutConfigurationRetryAt = Date.now() + 30000;
         }).then(function () {
             shortcutConfigurationLoading = false;
         });
@@ -90,9 +107,7 @@
         }
         var cached = itemSegmentCache[itemId];
         if (Array.isArray(cached)) {
-            if (cached.length) return sortSegments(cached);
-            // empty cache – fall through to localStorage in case data was
-            // saved by another tab or before the server responded empty
+            return sortSegments(cached);
         }
         var local = getState().items[itemId] || [];
         if (local.length) itemSegmentCache[itemId] = cloneSegments(local);
@@ -100,24 +115,49 @@
     }
 
     function setItemSegments(itemId, segments) {
-        var normalized = sortSegments(segments).map(function (segment, index) {
-            var copy = Object.assign({}, segment, { order: index + 1 });
-            if (/^片段\s*\d+$/.test(copy.name || '')) {
-                copy.name = '片段 ' + (index + 1);
+        var previous = itemSavePromises[itemId] || Promise.resolve();
+        var pending = previous.catch(function () {}).then(function () {
+            return ensureItemLoaded(itemId);
+        }).then(function (loaded) {
+            if (!loaded) {
+                showToast('无法读取已有片段，请稍后重试');
+                return false;
             }
-            return copy;
+            var values = typeof segments === 'function' ? segments(getItemSegments(itemId)) : segments;
+            var normalized = sortSegments(values).map(function (segment, index) {
+                var copy = Object.assign({}, segment, { order: index + 1 });
+                if (/^片段\s*\d+$/.test(copy.name || '')) {
+                    copy.name = '片段 ' + (index + 1);
+                }
+                return copy;
+            });
+            itemSegmentCache[itemId] = normalized;
+            reconcileActiveSegment(itemId, normalized);
+            return persistItemSegments(itemId, normalized).then(function (saved) {
+                if (saved) {
+                    delete cardHighlightCache[itemId];
+                    cardHighlightGeneration++;
+                    removeLegacyItem(itemId);
+                    var savedState = getState();
+                    if (savedState.unsavedItems) delete savedState.unsavedItems[itemId];
+                    saveState(savedState);
+                } else {
+                    var state = getState();
+                    state.unsavedItems = state.unsavedItems || {};
+                    state.unsavedItems[itemId] = normalized;
+                    saveState(state);
+                }
+                renderAll();
+                return saved;
+            });
         });
-        itemSegmentCache[itemId] = normalized;
-        return persistItemSegments(itemId, normalized).then(function (saved) {
-            if (saved) {
-                removeLegacyItem(itemId);
-            } else {
-                var state = getState();
-                state.items[itemId] = normalized;
-                saveState(state);
-            }
-            return saved;
+        itemSavePromises[itemId] = pending;
+        pending.then(function () {
+            if (itemSavePromises[itemId] === pending) delete itemSavePromises[itemId];
+        }, function () {
+            if (itemSavePromises[itemId] === pending) delete itemSavePromises[itemId];
         });
+        return pending;
     }
 
     function removeLegacyItem(itemId) {
@@ -149,23 +189,34 @@
             type: 'POST',
             url: url,
             contentType: 'application/json',
-            data: JSON.stringify({ ItemId: itemId, Segments: segments })
-        }).then(function () {
+            dataType: 'json',
+            data: JSON.stringify({ ItemId: itemId, Segments: segments, ExpectedRevision: itemRevisions[itemId] })
+        }).then(function (result) {
+            itemRevisions[itemId] = result.Revision;
             return true;
         }).catch(function (error) {
             console.error('Segment Loop: failed to save segments', error);
-            showToast('片段数据库保存失败，已保留浏览器副本');
+            if (error && error.status === 409) {
+                loadedServerItems[itemId] = false;
+                showToast('其他页面已修改片段，请刷新后重新编辑；本次修改已保留浏览器副本');
+            } else {
+                showToast('片段数据库保存失败，已保留浏览器副本');
+            }
             return false;
         });
     }
 
     function ensureItemLoaded(itemId) {
-        if (!itemId || loadedServerItems[itemId]) return Promise.resolve();
+        if (!itemId) return Promise.resolve(false);
+        if (loadedServerItems[itemId]) return Promise.resolve(true);
         if (loadingServerItems[itemId]) return loadingServerItems[itemId];
         var url = segmentApiUrl(itemId);
-        if (!url) return Promise.resolve();
+        if (!url) return Promise.resolve(false);
         var localSegments = getItemSegments(itemId);
-        loadingServerItems[itemId] = ApiClient.getJSON(url).then(function (serverSegments) {
+        var stateUrl = ApiClient.getUrl('SegmentLoop/State/' + encodeURIComponent(itemId));
+        loadingServerItems[itemId] = ApiClient.getJSON(stateUrl).then(function (snapshot) {
+            var serverSegments = snapshot.Segments;
+            itemRevisions[itemId] = snapshot.Revision;
             serverSegments = (Array.isArray(serverSegments) ? serverSegments : []).map(normalizeServerSegment);
             if (serverSegments.length) {
                 itemSegmentCache[itemId] = sortSegments(serverSegments);
@@ -182,11 +233,14 @@
             }
         }).then(function () {
             loadedServerItems[itemId] = true;
+            reconcileActiveSegment(itemId, getItemSegments(itemId));
             delete loadingServerItems[itemId];
             renderAll();
+            return true;
         }).catch(function (error) {
             delete loadingServerItems[itemId];
             console.error('Segment Loop: failed to load segments', error);
+            return false;
         });
         return loadingServerItems[itemId];
     }
@@ -221,8 +275,15 @@
         if (!itemId) {
             return;
         }
+        itemId = String(itemId);
+        if (currentPlaybackItemId && String(currentPlaybackItemId) !== itemId) {
+            activeSegment = null;
+            markStartMs = null;
+            markStartItemId = null;
+        }
         currentPlaybackItemId = itemId;
-        localStorage.setItem(rememberedItemKey, JSON.stringify({ itemId: itemId, time: Date.now() }));
+        try { sessionStorage.setItem(rememberedItemKey, JSON.stringify({ itemId: itemId, time: Date.now() })); }
+        catch (error) {}
     }
 
     function getRememberedPlaybackItemId() {
@@ -230,7 +291,7 @@
             return currentPlaybackItemId;
         }
         try {
-            var remembered = JSON.parse(localStorage.getItem(rememberedItemKey));
+            var remembered = JSON.parse(sessionStorage.getItem(rememberedItemKey));
             if (remembered && remembered.itemId && Date.now() - remembered.time < 300000) {
                 currentPlaybackItemId = remembered.itemId;
                 return currentPlaybackItemId;
@@ -300,6 +361,7 @@
             }
         }
         return playbackManagerPromise.then(function (playbackManager) {
+            resolvedPlaybackManager = playbackManager;
             // The loader can run before Emby's module system is ready. Do not cache
             // that transient failure forever; the periodic renderer will retry.
             if (!playbackManager) {
@@ -355,11 +417,14 @@
         if (/^\d+(?:\.\d+)?$/.test(value)) {
             return Math.round(Number(value) * 1000);
         }
+        if (!/^\d+:\d{1,2}(?:\.\d+)?$|^\d+:\d{1,2}:\d{1,2}(?:\.\d+)?$/.test(value)) return NaN;
         var parts = value.split(':');
+        var hasHours = parts.length === 3;
         var seconds = Number(parts.pop());
         var minutes = parts.length ? Number(parts.pop()) : 0;
         var hours = parts.length ? Number(parts.pop()) : 0;
-        if ([seconds, minutes, hours].some(function (n) { return !isFinite(n); })) {
+        if (seconds >= 60 || (hasHours && minutes >= 60) ||
+            [seconds, minutes, hours].some(function (n) { return !isFinite(n) || n < 0; })) {
             return NaN;
         }
         return Math.round(((hours * 60 + minutes) * 60 + seconds) * 1000);
@@ -701,15 +766,26 @@
     }
 
     function saveSegment(itemId, segment) {
-        var segments = getItemSegments(itemId).slice();
-        var exists = segments.some(function (item) { return item.id === segment.id; });
-        if (exists) {
-            segments = segments.map(function (item) { return item.id === segment.id ? segment : item; });
-        } else {
-            segments.push(segment);
-        }
-        setItemSegments(itemId, segments);
-        renderAll();
+        return setItemSegments(itemId, function (current) {
+            var segments = current.slice();
+            var exists = segments.some(function (item) { return item.id === segment.id; });
+            if (exists) {
+                segments = segments.map(function (item) { return item.id === segment.id ? segment : item; });
+            } else {
+                var order = segments.reduce(function (max, value, index) {
+                    return Math.max(max, getSegmentOrder(value, index));
+                }, 0) + 1;
+                segments.push(Object.assign({}, segment, { order: order }));
+            }
+            return segments;
+        });
+    }
+
+    function reconcileActiveSegment(itemId, segments) {
+        if (!activeSegment || String(activeSegment.itemId) !== String(itemId)) return;
+        var replacement = segments.filter(function (segment) { return segment.id === activeSegment.segment.id; })[0];
+        if (replacement) activeSegment.segment = replacement;
+        else activeSegment = null;
     }
 
     function showToast(message) {
@@ -735,6 +811,21 @@
         overlay.className = 'embySegmentDialogOverlay';
         overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>片段编辑</h2><button type="button" class="embySegmentDialogClose paper-icon-button-light" title="取消" aria-label="关闭"><i class="md-icon">close</i></button></div><div class="embySegmentDialogBody"><div class="embySegmentHelp">时间支持秒或 HH:MM:SS.mmm，例如 83.250 或 0:01:23.250。快捷键请在 Emby 插件设置中修改。</div><div class="embySegmentEditorRows"></div><button type="button" class="embySegmentEditorAdd raised">+ 新建片段</button></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised cancel">取消</button><button type="button" class="embySegmentSave raised submit">保存</button></div></div>';
         document.body.appendChild(overlay);
+
+        var unsaved = getState().unsavedItems;
+        if (unsaved && Array.isArray(unsaved[itemId])) {
+            var recover = document.createElement('button');
+            recover.type = 'button';
+            recover.className = 'embySegmentEditorAdd raised';
+            recover.textContent = '恢复本浏览器未保存的修改';
+            recover.onclick = function () {
+                var recovered = cloneSegments(unsaved[itemId]);
+                segments = editingSingle ? recovered.filter(function (value) { return value.id === selectedSegment.id; }) : recovered;
+                renderRows();
+                recover.remove();
+            };
+            overlay.querySelector('.embySegmentHelp').appendChild(recover);
+        }
 
         function syncRowsToSegments() {
             var byId = {};
@@ -883,9 +974,13 @@
         if (!video) {
             return;
         }
-        if (video.currentTime > 1 && currentPlaybackItemId && currentPlaybackItemId !== itemId) {
+        if (currentPlaybackItemId && String(currentPlaybackItemId) !== String(itemId)) {
             return;
         }
+        try {
+            var playingItem = resolvedPlaybackManager && resolvedPlaybackManager.currentItem && resolvedPlaybackManager.currentItem();
+            if (playingItem && String(playingItem.Id) !== String(itemId)) return;
+        } catch (error) {}
         if (activeSegment && activeSegment.itemId === itemId && activeSegment.segment.id === segment.id) {
             activeSegment = null;
             renderOsdSegments(itemId);
@@ -893,24 +988,40 @@
             return;
         }
         rememberPlaybackItemId(itemId);
-        activeSegment = { itemId: itemId, segment: segment };
-        seekVideo(video, segment.startMs);
+        activeSegment = { itemId: itemId, segment: segment, source: video.currentSrc || video.src };
+        seekVideo(video, segment.startMs).catch(function (error) {
+            console.debug('Segment Loop: segment seek failed', error);
+        });
         video.play().catch(function () {});
         renderOsdSegments(itemId);
         showToast('循环播放：' + segment.name);
     }
 
     function seekVideo(video, ms) {
+        if (resolvedPlaybackManager && typeof resolvedPlaybackManager.seek === 'function') {
+            try {
+                return Promise.resolve(resolvedPlaybackManager.seek(Math.max(0, ms) * 10000));
+            } catch (error) {
+                console.debug('Segment Loop: player seek unavailable', error);
+            }
+        }
         var seconds = Math.max(0, ms / 1000);
         try {
-            if (video.fastSeek) {
-                video.fastSeek(seconds);
-            } else {
-                video.currentTime = seconds;
-            }
-        } catch (err) {
             video.currentTime = seconds;
+        } catch (err) {
+            console.debug('Segment Loop: video seek unavailable', err);
         }
+        return Promise.resolve();
+    }
+
+    function getPlaybackTimeMs(video) {
+        if (resolvedPlaybackManager && typeof resolvedPlaybackManager.currentTime === 'function') {
+            try {
+                var ticks = resolvedPlaybackManager.currentTime();
+                if (ticks != null && isFinite(Number(ticks))) return Math.round(Number(ticks) / 10000);
+            } catch (error) {}
+        }
+        return Math.round(video.currentTime * 1000);
     }
 
     function onVideoTimeUpdate() {
@@ -918,18 +1029,41 @@
             return;
         }
         var video = getVideo();
-        if (!video) {
+        if (!video || video.seeking || video.readyState < 2 || (video.paused && !video.ended)) {
             return;
         }
-        var currentMs = video.currentTime * 1000;
+        if (String(currentPlaybackItemId) !== String(activeSegment.itemId)) return;
+        var managerItem = null;
+        try {
+            managerItem = resolvedPlaybackManager && typeof resolvedPlaybackManager.currentItem === 'function'
+                ? resolvedPlaybackManager.currentItem() : null;
+        } catch (error) {}
+        if ((managerItem && String(managerItem.Id) !== String(activeSegment.itemId)) ||
+            (!managerItem && (video.currentSrc || video.src) !== activeSegment.source)) {
+            activeSegment = null;
+            return;
+        }
+        if (loopSeekPending) return;
+        var currentMs = getPlaybackTimeMs(video);
         if (currentMs < activeSegment.segment.startMs - 500 || currentMs >= activeSegment.segment.endMs) {
-            seekVideo(video, activeSegment.segment.startMs);
-            video.play().catch(function () {});
+            loopSeekPending = true;
+            seekVideo(video, activeSegment.segment.startMs).catch(function (error) {
+                console.debug('Segment Loop: loop seek failed', error);
+            }).then(function () {
+                setTimeout(function () { loopSeekPending = false; }, 300);
+            });
+            if (video.ended) video.play().catch(function () {});
         }
     }
 
     function ensureVideoHook() {
         var video = getVideo();
+        if (hookedVideo !== video) {
+            activeSegment = null;
+            markStartMs = null;
+            markStartItemId = null;
+            hookedVideo = video;
+        }
         if (video && !video.embySegmentLoopHooked) {
             video.embySegmentLoopHooked = true;
             video.addEventListener('timeupdate', onVideoTimeUpdate);
@@ -942,6 +1076,7 @@
         if (!buttonsList.length) return;
         for (var i = 0; i < buttonsList.length; i++) {
             var b = buttonsList[i];
+            if (!isRendered(b)) continue;
             var itemId = getUrlItemId();
             if (!itemId) continue;
             var parent = b.parentNode;
@@ -957,11 +1092,89 @@
                 parent.insertBefore(host, b.nextSibling);
             }
             fillDetailHost(host, itemId);
+            renderDetailInfo(b, itemId);
         }
     }
 
+    function formatFileSize(value) {
+        if (value == null || value === '' || !isFinite(Number(value)) || Number(value) < 0) return '未知';
+        var bytes = Number(value);
+        var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+        var index = bytes ? Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1) : 0;
+        index = Math.max(0, index);
+        return (bytes / Math.pow(1024, index)).toFixed(index ? 2 : 0) + ' ' + units[index];
+    }
+
+    function getDetailItemInfo(itemId) {
+        if (!window.ApiClient || typeof ApiClient.getCurrentUserId !== 'function') return Promise.resolve(null);
+        var key = String(ApiClient.getCurrentUserId()) + '|' + itemId;
+        var cached = detailInfoCache[key];
+        if (cached && cached.expires > Date.now()) return Promise.resolve(cached.item);
+        if (detailInfoPromises[key]) return detailInfoPromises[key];
+        detailInfoPromises[key] = ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(function (item) {
+            detailInfoCache[key] = { item: item, expires: Date.now() + 300000 };
+            return item;
+        }).catch(function () {
+            detailInfoCache[key] = { item: null, expires: Date.now() + 30000 };
+            return null;
+        }).then(function (item) {
+            delete detailInfoPromises[key];
+            var keys = Object.keys(detailInfoCache);
+            while (keys.length > 32) delete detailInfoCache[keys.shift()];
+            return item;
+        });
+        return detailInfoPromises[key];
+    }
+
+    function renderDetailInfo(buttons, itemId) {
+        var parent = buttons.parentNode;
+        var host = parent.querySelector('.embySegmentFileInfo');
+        if (!host) {
+            host = document.createElement('div');
+            host.className = 'embySegmentFileInfo verticalFieldItem detail-lineItem';
+            host.setAttribute('role', 'status');
+            parent.insertBefore(host, buttons);
+        }
+        if (host.dataset.itemId !== String(itemId)) {
+            host.dataset.itemId = String(itemId);
+            host.textContent = '';
+            host.hidden = true;
+        }
+        getDetailItemInfo(itemId).then(function (item) {
+            if (!host.isConnected || host.dataset.itemId !== String(itemId) || getUrlItemId() !== String(itemId)) return;
+            if (!item || item.MediaType !== 'Video') {
+                host.hidden = true;
+                return;
+            }
+            var view = buttons.closest('.page, .itemView') || parent;
+            var select = view.querySelector('.selectSource');
+            var sources = item.MediaSources || [];
+            var source = sources.filter(function (value) { return select && value.Id === select.value; })[0];
+            source = source || sources.filter(function (value) { return value.Type === 'Default'; })[0] || sources[0];
+            var size = source ? source.Size : item.Size;
+            var details = ['文件大小：' + formatFileSize(size)];
+            if (source && source.Container) details.push(source.Container.toUpperCase());
+            var video = ((source && source.MediaStreams) || []).filter(function (stream) { return stream.Type === 'Video'; })[0];
+            if (video && video.Width && video.Height) details.push(video.Width + ' × ' + video.Height);
+            var text = details.join(' · ');
+            if (host.textContent !== text) host.textContent = text;
+            host.title = size != null && isFinite(Number(size)) && Number(size) >= 0
+                ? Number(size).toLocaleString() + ' 字节' : 'Emby 尚未提供此视频版本的文件大小';
+            host.hidden = false;
+        });
+    }
+
     function fillDetailHost(host, itemId) {
-        ensureItemLoaded(itemId).then(function () {
+        getDetailItemInfo(itemId).then(function (item) {
+            if (!host.isConnected || host.getAttribute('data-segitem') !== itemId) return false;
+            if (!item || item.MediaType !== 'Video') {
+                host.hidden = true;
+                return false;
+            }
+            host.hidden = false;
+            return ensureItemLoaded(itemId);
+        }).then(function (loaded) {
+            if (!loaded) return;
             if (!host.isConnected || host.getAttribute('data-segitem') !== itemId) return;
             var segments = getItemSegments(itemId);
             var key = segments.map(function (s) {
@@ -1083,7 +1296,7 @@
             return;
         }
         var segment = getItemSegments(itemId).filter(function (item) { return item.id === pendingSegmentLaunch.segmentId; })[0];
-        if (segment) {
+        if (segment && getVideo() && getVideo().readyState >= 1) {
             pendingSegmentLaunch = null;
             activateSegment(itemId, segment);
         }
@@ -1109,14 +1322,12 @@
             });
             return;
         }
-        tryAnyPendingSegment();
 
         // Show whatever we can IMMEDIATELY while waiting for the async call
         var quickId = getRememberedPlaybackItemId();
         if (quickId) {
             ensureItemLoaded(quickId);
             renderOsdSegments(quickId);
-            tryPendingSegment(quickId);
         }
 
         getCurrentPlaybackItem().then(function (item) {
@@ -1126,14 +1337,14 @@
             var itemId = item && item.Id;
             if (!itemId) {
                 var rememberedItemId = getRememberedPlaybackItemId();
-                if (rememberedItemId) {
+                if (rememberedItemId && pendingSegmentLaunch) {
                     renderOsdSegments(rememberedItemId);
                     tryPendingSegment(rememberedItemId);
                 }
                 return;
             }
+            itemId = String(itemId);
             rememberPlaybackItemId(itemId);
-            if (itemId === quickId) return;  // already rendered above
             ensureItemLoaded(itemId);
             renderOsdSegments(itemId);
             tryPendingSegment(itemId);
@@ -1180,7 +1391,8 @@
 
     function onKeyDown(e) {
         var target = e.target;
-        if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) {
+        if (e.repeat || e.ctrlKey || e.altKey || e.metaKey ||
+            (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))) {
             return;
         }
         var video = getVideo();
@@ -1195,6 +1407,7 @@
             return;
         }
         e.preventDefault();
+        var currentMs = getPlaybackTimeMs(video);
 
         if (isCaptureKey) {
             capturePoster(video);
@@ -1207,13 +1420,13 @@
                 return;
             }
             rememberPlaybackItemId(itemId);
-            var currentMs = Math.round(video.currentTime * 1000);
             if (e.key === settings.startKey) {
                 markStartMs = currentMs;
+                markStartItemId = String(itemId);
                 showToast('片段开始：' + formatTime(markStartMs));
                 return;
             }
-            if (markStartMs === null) {
+            if (markStartMs === null || markStartItemId !== String(itemId)) {
                 showToast('请先按开始快捷键：' + settings.startKey);
                 return;
             }
@@ -1231,8 +1444,9 @@
                 startMs: startMs,
                 endMs: endMs,
                 order: order
+            }).then(function (saved) {
+                if (saved) showToast('已保存片段，可在设置中编辑名称和时间');
             });
-            showToast('已保存片段，可在设置中编辑名称和时间');
         });
     }
 
@@ -1248,7 +1462,7 @@
         markStartMs = null;
         pendingSegmentLaunch = null;
         currentPlaybackItemId = null;
-        localStorage.removeItem(rememberedItemKey);
+        try { sessionStorage.removeItem(rememberedItemKey); } catch (error) {}
     }
 
     function injectStyle() {
@@ -1259,6 +1473,10 @@
         style.id = 'embySegmentLoopStyle';
         style.textContent = '.embySegmentDetailList{margin-top:.7em}.embySegmentTitle{font-weight:600;margin-bottom:.35em}.embySegmentRows{display:flex;gap:.45em;flex-wrap:wrap;align-items:center}.embySegmentChipWrap{display:inline-flex;align-items:center;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden}.embySegmentChip,.embySegmentAdd,.embySegmentSettings,.embySegmentGear,.embySegmentOsdChip{border:0;color:inherit;background:rgba(255,255,255,.16);border-radius:999px;padding:.55em .9em;cursor:pointer}.embySegmentDelete,.embySegmentDialogClose{font-family:Material Icons,Material Icons Round,Arial}.embySegmentGear{font-size:.9em;border-radius:0;padding:.55em .8em;background:rgba(255,255,255,.08)}.embySegmentChip{border-radius:999px 0 0 999px;background:transparent}.embySegmentAdd,.embySegmentSettings,.embySegmentSave{background:#43a047;color:#fff}.embySegmentOsdList{display:flex;gap:.4em;flex-wrap:wrap;justify-content:center;margin:.25em 0 .55em}.embySegmentOsdChip{font-size:.9em;background:rgba(0,0,0,.45);backdrop-filter:blur(8px)}.embySegmentOsdChip.active{background:#43a047;color:#fff}.embySegmentToast{position:fixed;left:50%;bottom:12%;transform:translateX(-50%);z-index:999999;background:rgba(0,0,0,.84);color:#fff;border-radius:999px;padding:.75em 1.1em;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35)}.embySegmentDialogOverlay{position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:2rem}.embySegmentDialog{width:min(920px,96vw);max-height:92vh;display:flex;flex-direction:column;background:#202020;color:#fff;border-radius:.35rem;box-shadow:0 18px 55px rgba(0,0,0,.55);overflow:hidden}.embySegmentDialogHeader,.embySegmentDialogFooter{display:flex;align-items:center;padding:1.1rem 1.4rem;background:#262626}.embySegmentDialogHeader{justify-content:space-between}.embySegmentDialogHeader h2{font-size:1.45rem;margin:0;font-weight:500}.embySegmentDialogClose,.embySegmentDelete{border:0;background:transparent;color:inherit;cursor:pointer}.embySegmentDialogClose{font-size:28px}.embySegmentDialogBody{padding:1.2rem 1.4rem;overflow:auto}.embySegmentDialogFooter{justify-content:flex-end;gap:.7rem}.embySegmentFieldGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:.7rem}.embySegmentFieldGrid label,.embySegmentEditorRow label{display:flex;flex-direction:column;gap:.35rem;color:rgba(255,255,255,.72);font-size:.88rem}.embySegmentFieldGrid input,.embySegmentEditorRow input{box-sizing:border-box;width:100%;background:#151515;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:.25rem;padding:.7rem .75rem;font:inherit}.embySegmentFieldGrid input:focus,.embySegmentEditorRow input:focus{outline:0;border-color:#43a047}.embySegmentHelp{color:rgba(255,255,255,.62);font-size:.9rem;margin:.25rem 0 1rem}.embySegmentEditorRows{display:flex;flex-direction:column;gap:.65rem;margin-bottom:1rem}.embySegmentEditorRow{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:.75rem;align-items:end;padding:.85rem;background:rgba(255,255,255,.06);border-radius:.35rem;border:1px solid transparent}.embySegmentEditorRow.embySegmentInvalid{border-color:#d32f2f}.embySegmentDelete{font-size:24px;height:2.7rem;width:2.7rem;border-radius:50%;background:rgba(255,255,255,.08)}.embySegmentEditorAdd,.embySegmentCancel,.embySegmentSave{border:0;border-radius:.25rem;padding:.65rem 1rem;color:inherit;cursor:pointer}.embySegmentCancel{background:rgba(255,255,255,.12)}@media(max-width:700px){.embySegmentDialogOverlay{padding:.75rem}.embySegmentFieldGrid,.embySegmentEditorRow{grid-template-columns:1fr}.embySegmentSettings{width:100%}.embySegmentChip{max-width:70vw;overflow:hidden;text-overflow:ellipsis}}';
         style.textContent += '.embySegmentOsdList{position:relative;z-index:2;pointer-events:auto}.embySegmentOsdChip{pointer-events:auto;touch-action:manipulation}';
+        style.textContent += '.embySegmentFileInfo{margin:.65em 0;opacity:.8;font-size:.92em;overflow-wrap:anywhere}.embySegmentFileInfo[hidden]{display:none}';
+        // Paint above the image: inset outlines can be covered by absolutely positioned covers,
+        // and Emby themes can reset the button border. An overlay also preserves card dimensions.
+        style.textContent += '.card .cardImageContainer.embySegmentFavoriteCard::after,.card .cardImageContainer.embySegmentSavedCard::after{content:""!important;position:absolute;inset:0;z-index:5;pointer-events:none;border-radius:inherit;box-shadow:inset 0 0 0 3px #ffc857!important}.card .cardImageContainer.embySegmentSavedCard::after{box-shadow:inset 0 0 0 3px #36d9ed!important}.card .cardImageContainer.embySegmentFavoriteCard.embySegmentSavedCard::after{box-shadow:inset 0 0 0 3px #36d9ed,inset 0 0 0 6px #ffc857!important}';
         style.textContent += '.embySegmentBifPreview{position:fixed;z-index:1000001;width:min(360px,calc(100vw - 16px));overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:.45rem;background:#181818;color:#fff;box-shadow:0 12px 38px rgba(0,0,0,.58);opacity:0;visibility:hidden;transform:translateY(5px) scale(.985);transform-origin:center bottom;transition:opacity .12s ease,transform .12s ease,visibility 0s linear .12s;pointer-events:none}.embySegmentBifPreview.visible{opacity:1;visibility:visible;transform:none;transition-delay:0s}.embySegmentBifViewport{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;background:#080808}.embySegmentBifImage{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .12s ease}.embySegmentBifImage.ready{opacity:1}.embySegmentBifStatus{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:1rem;color:rgba(255,255,255,.7);font-size:.86rem;text-align:center;background:linear-gradient(135deg,rgba(255,255,255,.025),rgba(255,255,255,.07))}.embySegmentBifStatus.hide{display:none}.embySegmentBifFrameTime{position:absolute;right:.45rem;bottom:.4rem;padding:.18rem .38rem;border-radius:.2rem;background:rgba(0,0,0,.72);font-size:.75rem;font-variant-numeric:tabular-nums}.embySegmentBifInfo{display:flex;align-items:center;justify-content:space-between;gap:.8rem;padding:.65rem .75rem}.embySegmentBifName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.embySegmentBifRange{flex:0 0 auto;color:rgba(255,255,255,.68);font-size:.78rem;font-variant-numeric:tabular-nums}@media(max-width:460px){.embySegmentBifInfo{display:block}.embySegmentBifRange{margin-top:.22rem}}';
         document.head.appendChild(style);
     }
@@ -1270,23 +1488,115 @@
         injectStyle();
         renderDetailSegments();
         renderPlaybackSegments();
+        renderCardHighlights();
         setTimeout(function () {
             isRendering = false;
         }, 100);
     }
 
+    function getCardHighlightMode() {
+        var mode = (window.EmbySegmentLoopConfig || {}).cardHighlightMode || 'Both';
+        return ['None', 'Favorites', 'Segments', 'Both'].indexOf(mode) >= 0 ? mode : 'Both';
+    }
+
+    function getCardHighlightItem(card) {
+        var container = card.closest('.itemsContainer');
+        var item = null;
+        try {
+            if (container && typeof container.getItemFromElement === 'function') item = container.getItemFromElement(card);
+        } catch (error) {}
+        if (!item) {
+            item = { Id: card.getAttribute('data-id') || card.getAttribute('data-itemid'),
+                Type: card.getAttribute('data-type'), MediaType: card.getAttribute('data-mediatype') };
+        }
+        if (!item.Id || item.IsFolder ||
+            (item.MediaType !== 'Video' && ['Movie', 'Episode', 'Video', 'MusicVideo'].indexOf(item.Type) < 0)) return null;
+        return item;
+    }
+
+    function applyCardHighlight(image, favorite, hasSegments, mode) {
+        image.classList.toggle('embySegmentFavoriteCard', !!favorite && (mode === 'Favorites' || mode === 'Both'));
+        image.classList.toggle('embySegmentSavedCard', !!hasSegments && (mode === 'Segments' || mode === 'Both'));
+    }
+
+    function renderCardHighlights() {
+        var mode = getCardHighlightMode();
+        if (!shortcutConfigurationLoaded) mode = 'None';
+        if (!window.ApiClient || typeof ApiClient.getCurrentUserId !== 'function') return;
+        var context = ApiClient.getUrl('SegmentLoop/Highlights') + '|' + ApiClient.getCurrentUserId();
+        if (context !== cardHighlightContext) {
+            cardHighlightContext = context;
+            cardHighlightCache = {};
+            cardHighlightRequest = null;
+        }
+        var missing = [];
+        var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+        cards.forEach(function (card) {
+            var image = card.querySelector('.cardImageContainer');
+            if (!image) return;
+            var item = mode !== 'None' && isRendered(card) ? getCardHighlightItem(card) : null;
+            if (!item) {
+                applyCardHighlight(image, false, false, mode);
+                return;
+            }
+            var id = String(item.Id);
+            var rating = card.querySelector('[data-isfavorite]');
+            var favorite = rating ? rating.getAttribute('data-isfavorite') === 'true'
+                : !!(item.UserData && item.UserData.IsFavorite);
+            var cached = cardHighlightCache[id];
+            applyCardHighlight(image, favorite, cached && cached.hasSegments, mode);
+            if ((mode === 'Both' || mode === 'Segments') && (!cached || cached.expires <= Date.now()) && missing.indexOf(id) < 0)
+                missing.push(id);
+        });
+        if (!missing.length || cardHighlightRequest) return;
+        var ids = missing.slice(0, 100);
+        var request = { context: context, generation: cardHighlightGeneration };
+        cardHighlightRequest = request;
+        ApiClient.getJSON(ApiClient.getUrl('SegmentLoop/Highlights', { ItemIds: ids.join(',') })).then(function (result) {
+            if (context !== cardHighlightContext || request.generation !== cardHighlightGeneration) return;
+            var saved = result.ItemIds || [];
+            ids.forEach(function (id) {
+                cardHighlightCache[id] = { hasSegments: saved.indexOf(id) >= 0, expires: Date.now() + 30000 };
+            });
+        }).catch(function (error) {
+            if (context !== cardHighlightContext) return;
+            ids.forEach(function (id) {
+                cardHighlightCache[id] = { hasSegments: false, expires: Date.now() + 15000 };
+            });
+            console.debug('Segment Loop: card highlight status unavailable', error);
+        }).then(function () {
+            if (cardHighlightRequest !== request) return;
+            cardHighlightRequest = null;
+            var keys = Object.keys(cardHighlightCache);
+            while (keys.length > 512) delete cardHighlightCache[keys.shift()];
+            renderCardHighlights();
+        });
+    }
+
+    var cardHighlightFramePending = false;
+    function scheduleCardHighlights() {
+        if (cardHighlightFramePending) return;
+        cardHighlightFramePending = true;
+        window.requestAnimationFrame(function () {
+            cardHighlightFramePending = false;
+            renderCardHighlights();
+        });
+    }
+
     window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('scroll', function () { hideBifPreview(); }, true);
+    document.addEventListener('scroll', function () { hideBifPreview(); scheduleCardHighlights(); }, true);
     window.addEventListener('resize', function () { hideBifPreview(); });
     new MutationObserver(function () {
+        scheduleCardHighlights();
         if (isRendering) {
             return;
         }
         clearTimeout(renderTimer);
         renderTimer = setTimeout(renderAll, 150);
-    }).observe(document.documentElement, { childList: true, subtree: true });
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ['data-isfavorite', 'data-id', 'data-itemid', 'src'] });
     setInterval(renderPlaybackSegments, 1500);
     setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)

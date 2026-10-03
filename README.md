@@ -10,6 +10,8 @@
 - **BIF 悬停预览**：鼠标悬停片段按钮时显示时间范围，并在小窗中快速播放片段范围内的 Emby BIF 预览帧。
 - **服务端存储**：片段数据持久化到 SQLite 数据库，支持自定义存储路径。
 - **插件设置页**：在 Emby 插件设置中配置快捷键。
+- **视频详情预览信息**：在播放按钮附近显示所选视频版本的文件大小、容器和分辨率，悬停显示精确字节数。大小采用 KiB/MiB/GiB；远程源或未提供大小时显示“未知”。
+- **影片卡片高亮**：设置页可选择关闭、仅收藏、仅有片段或两者都高亮。收藏为金色、有片段为青色，同时满足显示双色边框；收藏状态按当前登录用户判断。
 
 ## 项目结构
 
@@ -56,6 +58,7 @@ EmbySegmentLoop/
 ```
 
 如果你的 Emby Server 不在 `..\..\system`，请修改为实际路径。
+也可传入 `-p:EmbySystemPath="Emby system 目录"`，无需修改项目文件。
 
 ### 3. 构建
 
@@ -68,8 +71,9 @@ dotnet publish -c Release -o .\publish
 ```
 
 `build-release.ps1` 会自动检测 `T:\dotnet-sdk-8.0.422-win-x64\dotnet.exe`，找不到时回退到系统 PATH 中的 `dotnet`。
-构建前会强制从 `T:\emby-server-deb_4.9.5.0_amd64.deb` 重新提取原版
-Linux dashboard 文件并生成注入版，避免在已经修改过的文件上重复注入。
+构建时优先从 `T:\emby-server-deb_4.9.5.0_amd64.deb` 提取原版 Linux dashboard。
+DEB 不存在时，会先校验仓库 `original` 文件的大小与 SHA-256，再重新生成注入版。
+可用 `-EmbySystemPath` 和 `-DebPath` 参数指定其他路径。编译失败会停止打包。
 
 构建产物：
 - `release\Emby.Plugins.SegmentLoop.dll` — 插件 DLL
@@ -130,6 +134,12 @@ Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\prog
 - **REST API**：
   - `GET /SegmentLoop/Segments/{ItemId}` — 获取视频的片段列表
   - `POST /SegmentLoop/Segments/{ItemId}` — 保存视频的片段列表
+  - `GET /SegmentLoop/State/{ItemId}` — 获取片段与 Revision；保存时传入 ExpectedRevision，可防止旧页面覆盖其他页面的新修改（冲突返回409）
+  - `GET /SegmentLoop/ClientConfiguration` — 为登录用户提供快捷键配置，不暴露数据库路径
+
+片段是视频级共享数据；能够访问视频的登录用户可以编辑片段。保存失败的浏览器副本
+可通过编辑窗口中的“恢复本浏览器未保存的修改”恢复。视频信息扩展适用于 Emby Web 详情页；
+原生手机、电视客户端不会运行 Web 注入脚本。
 
 ## 插件设置
 
@@ -141,6 +151,7 @@ Copy-Item .\release\Emby.Plugins.SegmentLoop.dll -Destination "<Emby目录>\prog
 | 片段结束快捷键 | `]` | 播放时按下标记片段结束点 |
 | 片段数据库文件 | 空（使用默认路径）| SQLite 数据库存储路径 |
 | 无效片段清理间隔 | `24` 小时 | 定期清理媒体库中已不存在的 ItemId；设为0关闭定时清理 |
+| 影片卡片高亮边框 | 收藏或有片段的影片 | 支持关闭、仅收藏、仅有片段、两者都高亮；保存后当前页面立即生效，其他已打开页面刷新后生效 |
 
 修改快捷键后保存，刷新 Emby Web 页面生效。
 
@@ -277,6 +288,37 @@ python3 /home/wangzhendong/remux_bad_mp4s.py --help
 ```
 
 ## 版本历史
+
+### v1.1.23.0
+
+- 修复封面图片遮住高亮边框和页面样式覆盖双色边框的问题，改为封面上方的边框图层，不改变卡片尺寸。
+- 滚动加载、复用卡片和收藏状态更新后，在下一帧刷新边框，减少漏显示和延迟。
+
+### v1.1.22.0
+- 增加“影片卡片高亮边框”设置，覆盖首页、媒体库、搜索、收藏页等使用 Emby 卡片组件的影片卡片。
+- 按当前用户的实时收藏状态显示金色边框，按服务端已保存片段显示青色边框；同时满足显示双色边框。
+- 已认证批量接口每次最多查询100个视频，遵守用户的媒体库可见权限；浏览器缓存结果30秒，片段保存后立即失效。
+- 关闭或切换高亮模式立即清除不适用的边框，不高亮媒体库文件夹和演职人员卡片。
+
+### v1.1.21.0
+- 视频详情页增加文件大小、容器与分辨率；按所选媒体版本更新，合并重复请求并限制缓存数量。
+- 修复自定义数据库路径重启后丢失、非法片段范围缺少服务端校验和 SQLite 失败路径资源泄漏。
+- 保存前等待已有片段读取完成，同一页面的保存按顺序执行；新客户端使用 Revision 检测跨页面保存冲突。
+- 修复旧视频循环状态和截取起点串到新视频、暂停被强制继续、转码时间轴偏移以及非法时间输入。
+- 普通用户可以读取快捷键；片段接口检查视频存在性与用户的媒体库可见权限。
+- 重封装工具在备份后目录同步失败时恢复原文件，并拒绝替换处理期间发生变化的源文件。
+- 发布包清单增加 DLL 校验，构建失败不再继续复制旧产物。
+
+## 回归检查
+
+```powershell
+node --test tests/frontend.test.cjs tests/config.test.cjs
+dotnet run --project tests/RepositoryChecks -c Release -p:EmbySystemPath="Emby system 目录"
+python -m unittest discover -s tests -p 'test_*.py'
+```
+
+SQLite 检查在临时目录创建测试库；重封装检查使用临时文件和故障模拟，不处理真实视频。
+整体检视与验证范围见 [CODE_REVIEW.md](CODE_REVIEW.md)。
 
 ### v1.1.20.0
 - 详情页和播放页的片段按钮增加悬停预览小窗，同时显示片段名称与毫秒级时间范围。

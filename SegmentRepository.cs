@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace Emby.Plugins.SegmentLoop;
 
@@ -55,11 +57,27 @@ internal sealed class SegmentRepository
         }
     }
 
-    public void Replace(string itemId, IReadOnlyList<SegmentRecord> segments)
+    public SegmentSnapshot GetSnapshot(string itemId)
     {
-        if (string.IsNullOrWhiteSpace(itemId)) throw new ArgumentException("ItemId is required.", nameof(itemId));
         lock (Sync)
         {
+            var segments = Get(itemId);
+            return new SegmentSnapshot
+            {
+                Segments = segments,
+                Revision = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(segments)))
+            };
+        }
+    }
+
+    public string Replace(string itemId, IReadOnlyList<SegmentRecord> segments, string? expectedRevision = null)
+    {
+        if (string.IsNullOrWhiteSpace(itemId)) throw new ArgumentException("ItemId is required.", nameof(itemId));
+        ValidateSegments(segments);
+        lock (Sync)
+        {
+            if (expectedRevision != null && !string.Equals(expectedRevision, GetSnapshot(itemId).Revision, StringComparison.Ordinal))
+                throw new SegmentConflictException();
             using var db = Open();
             db.Exec("BEGIN IMMEDIATE");
             try
@@ -88,6 +106,19 @@ internal sealed class SegmentRepository
                 db.Exec("ROLLBACK");
                 throw;
             }
+            return GetSnapshot(itemId).Revision;
+        }
+    }
+
+    internal static void ValidateSegments(IReadOnlyList<SegmentRecord> segments)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var segment in segments)
+        {
+            if (segment == null || string.IsNullOrWhiteSpace(segment.Id) || !ids.Add(segment.Id))
+                throw new ArgumentException("Each segment must have a unique, nonempty Id.");
+            if (segment.StartMs < 0 || segment.EndMs <= segment.StartMs || segment.Order < 0)
+                throw new ArgumentException("Segment times must satisfy 0 <= StartMs < EndMs and Order >= 0.");
         }
     }
 
@@ -137,13 +168,33 @@ internal sealed class SegmentRepository
         }
     }
 
+    public List<string> GetItemIdsWithSegments(IReadOnlyList<string> itemIds)
+    {
+        if (itemIds.Count == 0) return new();
+        if (itemIds.Count > 100) throw new ArgumentException("At most 100 item IDs are allowed.");
+        lock (Sync)
+        {
+            using var db = Open();
+            using var statement = db.Prepare("SELECT DISTINCT item_id FROM segments WHERE item_id IN (" +
+                string.Join(",", Enumerable.Repeat("?", itemIds.Count)) + ")");
+            for (var index = 0; index < itemIds.Count; index++) statement.BindText(index + 1, itemIds[index]);
+            var result = new List<string>();
+            while (statement.Step() == Row) result.Add(statement.Text(0));
+            return result;
+        }
+    }
+
     private static Database Open()
     {
         if (string.IsNullOrWhiteSpace(_databasePath)) throw new InvalidOperationException("Segment database path is not configured.");
         Directory.CreateDirectory(Path.GetDirectoryName(_databasePath)!);
         var db = new Database(_databasePath);
-        db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS segments(item_id TEXT NOT NULL,segment_id TEXT NOT NULL,name TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,sort_order INTEGER NOT NULL,PRIMARY KEY(item_id,segment_id)); CREATE INDEX IF NOT EXISTS ix_segments_item_order ON segments(item_id,sort_order);");
-        return db;
+        try
+        {
+            db.Exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS segments(item_id TEXT NOT NULL,segment_id TEXT NOT NULL,name TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,sort_order INTEGER NOT NULL,PRIMARY KEY(item_id,segment_id)); CREATE INDEX IF NOT EXISTS ix_segments_item_order ON segments(item_id,sort_order);");
+            return db;
+        }
+        catch { db.Dispose(); throw; }
     }
 
     private sealed class Database : IDisposable
@@ -151,14 +202,20 @@ internal sealed class SegmentRepository
         private IntPtr _handle;
         public Database(string path)
         {
-            Check(sqlite3_open_v2(path, out _handle, OpenReadWrite | OpenCreate | OpenFullMutex, null));
+            try { Check(sqlite3_open_v2(path, out _handle, OpenReadWrite | OpenCreate | OpenFullMutex, null)); }
+            catch { Dispose(); throw; }
         }
         public Statement Prepare(string sql)
         {
             Check(sqlite3_prepare_v2(_handle, sql, -1, out var statement, IntPtr.Zero));
             return new Statement(this, statement);
         }
-        public void Exec(string sql) => Check(sqlite3_exec(_handle, sql, IntPtr.Zero, IntPtr.Zero, out _));
+        public void Exec(string sql)
+        {
+            var code = sqlite3_exec(_handle, sql, IntPtr.Zero, IntPtr.Zero, out var error);
+            try { Check(code); }
+            finally { if (error != IntPtr.Zero) sqlite3_free(error); }
+        }
         public void Check(int code)
         {
             if (code != Ok && code != Row && code != Done) throw new InvalidOperationException(Marshal.PtrToStringUTF8(sqlite3_errmsg(_handle)) ?? "SQLite error " + code);
@@ -183,6 +240,7 @@ internal sealed class SegmentRepository
 
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_open_v2([MarshalAs(UnmanagedType.LPUTF8Str)] string filename, out IntPtr db, int flags, [MarshalAs(UnmanagedType.LPUTF8Str)] string? vfs);
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_close_v2(IntPtr db);
+    [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern void sqlite3_free(IntPtr pointer);
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr sqlite3_errmsg(IntPtr db);
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_exec(IntPtr db, [MarshalAs(UnmanagedType.LPUTF8Str)] string sql, IntPtr callback, IntPtr arg, out IntPtr error);
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_prepare_v2(IntPtr db, [MarshalAs(UnmanagedType.LPUTF8Str)] string sql, int bytes, out IntPtr statement, IntPtr tail);
@@ -194,4 +252,9 @@ internal sealed class SegmentRepository
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_finalize(IntPtr statement);
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr sqlite3_column_text(IntPtr statement, int index);
     [DllImport("sqlite3", CallingConvention = CallingConvention.Cdecl)] private static extern long sqlite3_column_int64(IntPtr statement, int index);
+}
+
+internal sealed class SegmentConflictException : InvalidOperationException
+{
+    public SegmentConflictException() : base("Segments were changed by another client. Reload before saving.") { }
 }

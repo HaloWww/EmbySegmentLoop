@@ -3,7 +3,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Emby.Plugins.SegmentLoop</AssemblyName>
     <RootNamespace>Emby.Plugins.SegmentLoop</RootNamespace>
-    <Version>1.1.20.0</Version>
+    <Version>1.1.23.0</Version>
+    <EmbySystemPath Condition="'$(EmbySystemPath)' == ''">..\..\system</EmbySystemPath>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -12,20 +13,21 @@
 
   <ItemGroup>
     <Reference Include="MediaBrowser.Common">
-      <HintPath>..\..\system\MediaBrowser.Common.dll</HintPath>
+      <HintPath>$(EmbySystemPath)\MediaBrowser.Common.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="MediaBrowser.Controller">
-      <HintPath>..\..\system\MediaBrowser.Controller.dll</HintPath>
+      <HintPath>$(EmbySystemPath)\MediaBrowser.Controller.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="MediaBrowser.Model">
-      <HintPath>..\..\system\MediaBrowser.Model.dll</HintPath>
+      <HintPath>$(EmbySystemPath)\MediaBrowser.Model.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Include="segmentloop.js" />
     <EmbeddedResource Include="config.html" />
     <EmbeddedResource Include="config.js" />

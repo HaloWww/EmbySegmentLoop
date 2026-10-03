@@ -1,4 +1,4 @@
-<div data-role="page" class="page type-interior pluginConfigurationPage segmentLoopConfigPage" data-controller="__plugin/segmentloopconfigjs1118">
+<div data-role="page" class="page type-interior pluginConfigurationPage segmentLoopConfigPage" data-controller="__plugin/segmentloopconfigjs1123">
     <style>
         .segmentLoopConfigPage{min-height:100%;box-sizing:border-box;color:inherit}
         .segmentLoopConfigPage .segmentLoopContent{box-sizing:border-box;width:100%;max-width:54em;margin:0 auto;padding:2rem 1rem}
@@ -8,6 +8,7 @@
         .segmentLoopConfigPage .inputContainer{margin-bottom:1.2rem}
         .segmentLoopConfigPage label{display:block;margin-bottom:.4rem;color:inherit;font-weight:600}
         .segmentLoopConfigPage input{box-sizing:border-box;width:100%;font:inherit}
+        .segmentLoopConfigPage select{box-sizing:border-box;width:100%;font:inherit;padding:.65rem;background:#202020;color:#fff;border:1px solid #666;border-radius:.25rem}
         .segmentLoopConfigPage .segmentLoopSave{font-weight:600}
         .segmentLoopConfigPage .segmentLoopSave:disabled{opacity:.55;cursor:default}
         .segmentLoopConfigPage .segmentLoopStatus{min-height:1.4em;margin:.9rem 0 0}
@@ -22,6 +23,7 @@
             <div class="inputContainer fieldset-field"><label for="slCapture">截取海报快捷键</label><input id="slCapture" class="slCapture emby-input" value="P" /><div class="fieldDescription">播放时按此键截取海报画面。</div></div>
             <div class="inputContainer fieldset-field"><label for="slPath">片段数据库文件</label><input id="slPath" class="slPath emby-input" placeholder="留空使用 Emby 元数据目录" /><div class="fieldDescription">留空时使用 metadata/segmentloop/segments.db。修改路径不会自动搬移旧数据库。</div></div>
             <div class="inputContainer fieldset-field"><label for="slCleanupInterval">无效片段清理间隔（小时）</label><input id="slCleanupInterval" class="slCleanupInterval emby-input" type="number" min="0" max="8760" step="1" value="24" /><div class="fieldDescription">默认24小时。视频从 Emby 删除时会立即清理；此任务定期删除因外部删文件或媒体库重建产生的孤立片段。填写0关闭自动定时清理。</div></div>
+            <div class="inputContainer fieldset-field"><label for="slCardHighlightMode">影片卡片高亮边框</label><select id="slCardHighlightMode" class="slCardHighlightMode"><option value="None">关闭</option><option value="Favorites">仅收藏的影片</option><option value="Segments">仅有片段的影片</option><option value="Both" selected>收藏或有片段的影片</option></select><div class="fieldDescription">默认两者都高亮。收藏为金色、有片段为青色，同时满足时显示双色边框。适用于首页、媒体库、搜索和收藏页的影片卡片；保存后立即生效。</div></div>
             <button type="submit" class="segmentLoopSave raised button-submit">保存</button>
             <div class="segmentLoopStatus" role="status" aria-live="polite"></div>
         </form>

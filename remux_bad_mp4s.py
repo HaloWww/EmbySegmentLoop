@@ -441,10 +441,14 @@ def sync_file_system(path: Path) -> None:
     run([sync_command, "-f", str(path)])
 
 
-def replace_from_staging(source: Path, staged_output: Path) -> None:
+def replace_from_staging(source: Path, staged_output: Path, expected_stat: os.stat_result | None = None) -> None:
     token = uuid.uuid4().hex
     backup = source.with_name(f".{source.name}.segmentloop-backup-{token}")
     original_stat = source.stat()
+    if expected_stat is not None:
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+        if any(getattr(original_stat, field) != getattr(expected_stat, field) for field in fields):
+            raise RemuxPreparationError("重封装期间源文件发生变化，已取消替换")
     if original_stat.st_nlink != 1:
         raise RuntimeError(f"原文件存在 {original_stat.st_nlink} 个硬链接，为避免破坏链接关系已跳过")
 
@@ -456,8 +460,8 @@ def replace_from_staging(source: Path, staged_output: Path) -> None:
     same_filesystem = staged_output.stat().st_dev == source.parent.stat().st_dev
 
     os.replace(source, backup)
-    fsync_directory(source.parent)
     try:
+        fsync_directory(source.parent)
         if same_filesystem:
             os.replace(staged_output, source)
             fsync_directory(source.parent)
@@ -553,7 +557,8 @@ def remux(
     ram_dir: Path,
     fallback_temp_dir: Path | None,
 ) -> None:
-    required = path.stat().st_size + RAM_RESERVE_BYTES
+    original_stat = path.stat()
+    required = original_stat.st_size + RAM_RESERVE_BYTES
     ram_available = shutil.disk_usage(ram_dir).free
     work_dir = ram_dir
     if ram_available < required:
@@ -616,7 +621,7 @@ def remux(
             raise
         except (subprocess.CalledProcessError, OSError, ValueError, RuntimeError) as error:
             raise RemuxPreparationError(str(error)) from error
-        replace_from_staging(path, staged_output)
+        replace_from_staging(path, staged_output, original_stat)
     finally:
         staged_output.unlink(missing_ok=True)
 

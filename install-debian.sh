@@ -94,8 +94,9 @@ if ask "Install/update Segment Loop plugin?"; then
     python3 - "${TMP_SEGLOOP}" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8-sig"))
 for local_name, key in (
+    ("Emby.Plugins.SegmentLoop.dll", "release/Emby.Plugins.SegmentLoop.dll"),
     ("index.html", "injected/dashboard-ui/index.html"),
     ("item.js", "injected/dashboard-ui/item/item.js"),
 ):

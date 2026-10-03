@@ -93,6 +93,7 @@ define([], function () {
                 page.querySelector('.slPath').value = config.StoragePath || '';
                 var cleanupHours = Number(config.CleanupIntervalHours);
                 page.querySelector('.slCleanupInterval').value = isFinite(cleanupHours) ? cleanupHours : 24;
+                page.querySelector('.slCardHighlightMode').value = config.CardHighlightMode || 'Both';
                 finishLoading();
             }).catch(fail);
         }
@@ -115,6 +116,7 @@ define([], function () {
                 config.EndKey = page.querySelector('.slEnd').value || ']';
                 config.CaptureKey = page.querySelector('.slCapture').value || 'P';
                 config.StoragePath = page.querySelector('.slPath').value.trim();
+                config.CardHighlightMode = page.querySelector('.slCardHighlightMode').value;
                 var cleanupHours = parseInt(page.querySelector('.slCleanupInterval').value, 10);
                 config.CleanupIntervalHours = isFinite(cleanupHours)
                     ? Math.max(0, Math.min(8760, cleanupHours))
@@ -123,8 +125,10 @@ define([], function () {
                     window.EmbySegmentLoopConfig = {
                         startKey: config.StartKey,
                         endKey: config.EndKey,
-                        captureKey: config.CaptureKey
+                        captureKey: config.CaptureKey,
+                        cardHighlightMode: config.CardHighlightMode
                     };
+                    if (window.EmbySegLoop) window.EmbySegLoop.renderAll();
                 });
             }).then(function () {
                 finishLoading();

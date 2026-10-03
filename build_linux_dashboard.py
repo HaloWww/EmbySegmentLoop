@@ -49,7 +49,7 @@ def inject_index(original: bytes, client_script: bytes) -> bytes:
     injection = (
         "<!-- SegmentLoop:start -->\n"
         "<script>\n"
-        'window.EmbySegmentLoopConfig={startKey:"[",endKey:"]",captureKey:"P"};\n'
+        'window.EmbySegmentLoopConfig={startKey:"[",endKey:"]",captureKey:"P",cardHighlightMode:"Both"};\n'
         + client_script.decode("utf-8").rstrip()
         + "\n</script>\n"
         "<!-- SegmentLoop:end -->\n"
@@ -59,7 +59,8 @@ def inject_index(original: bytes, client_script: bytes) -> bytes:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("deb", type=Path, help="Path to emby-server-deb_4.9.5.0_amd64.deb")
+    parser.add_argument("deb", type=Path, nargs="?", help="Path to emby-server-deb_4.9.5.0_amd64.deb")
+    parser.add_argument("--from-original", action="store_true", help="Use checked-in originals after verifying their manifest hashes")
     parser.add_argument(
         "--output",
         type=Path,
@@ -68,20 +69,32 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    deb_path = args.deb.resolve()
     output = args.output.resolve()
     client_text = Path(__file__).with_name("segmentloop.js").read_text(encoding="utf-8")
     client_script = client_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
-    data_tar = read_ar_member(deb_path, "data.tar.xz")
-
     originals: dict[str, bytes] = {}
-    with tarfile.open(fileobj=io.BytesIO(data_tar), mode="r:xz") as archive:
-        for relative, member_name in DEB_MEMBERS.items():
-            member = archive.getmember(member_name)
-            extracted = archive.extractfile(member)
-            if extracted is None:
-                raise FileNotFoundError(member_name)
-            originals[relative] = extracted.read()
+    if args.from_original:
+        previous = json.loads((output / "manifest.json").read_text(encoding="utf-8-sig"))
+        source_file, source_hash = previous["sourceFile"], previous["sourceSha256"]
+        for relative in DEB_MEMBERS:
+            data = (output / "original" / relative).read_bytes()
+            expected = previous["files"][f"original/{relative}"]
+            if len(data) != expected["size"] or sha256(data) != expected["sha256"]:
+                raise ValueError(f"Original file checksum mismatch: {relative}")
+            originals[relative] = data
+    else:
+        if args.deb is None:
+            parser.error("Provide the official DEB or --from-original")
+        deb_path = args.deb.resolve()
+        source_file, source_hash = deb_path.name, sha256(deb_path.read_bytes())
+        data_tar = read_ar_member(deb_path, "data.tar.xz")
+        with tarfile.open(fileobj=io.BytesIO(data_tar), mode="r:xz") as archive:
+            for relative, member_name in DEB_MEMBERS.items():
+                member = archive.getmember(member_name)
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise FileNotFoundError(member_name)
+                originals[relative] = extracted.read()
 
     injected = {
         "dashboard-ui/index.html": inject_index(
@@ -93,8 +106,8 @@ def main() -> None:
     }
 
     manifest: dict[str, object] = {
-        "sourceFile": deb_path.name,
-        "sourceSha256": sha256(deb_path.read_bytes()),
+        "sourceFile": source_file,
+        "sourceSha256": source_hash,
         "files": {},
     }
     file_manifest = manifest["files"]

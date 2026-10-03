@@ -32,7 +32,15 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
 
     public void Run()
     {
-        try { SegmentRepository.Instance.EnsureCreated(); } catch { }
+        try
+        {
+            Plugin.Instance?.ConfigureStorage();
+            SegmentRepository.Instance.EnsureCreated();
+        }
+        catch (Exception error)
+        {
+            _logger.ErrorException("Failed to initialize Segment Loop storage.", error);
+        }
         _instance = this;
         _libraryManager.ItemRemoved += OnItemRemoved;
         _subscribed = true;
@@ -158,7 +166,8 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
                 {
                     startKey = string.IsNullOrWhiteSpace(configuration.StartKey) ? "[" : configuration.StartKey,
                     endKey = string.IsNullOrWhiteSpace(configuration.EndKey) ? "]" : configuration.EndKey,
-                    captureKey = string.IsNullOrWhiteSpace(configuration.CaptureKey) ? "P" : configuration.CaptureKey
+                    captureKey = string.IsNullOrWhiteSpace(configuration.CaptureKey) ? "P" : configuration.CaptureKey,
+                    cardHighlightMode = configuration.CardHighlightMode
                 }) + ";" + Environment.NewLine +
                 js + Environment.NewLine +
                 "</script>" + Environment.NewLine +
