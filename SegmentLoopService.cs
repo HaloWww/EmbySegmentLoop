@@ -173,13 +173,7 @@ public sealed class SegmentLoopService : BaseApiService
 
     public object Get(GetSegmentLoopScript request)
     {
-        var assembly = Assembly.GetExecutingAssembly();
-        var resourceName = assembly.GetManifestResourceNames()
-            .FirstOrDefault(name => name.EndsWith("segmentloop.js", StringComparison.OrdinalIgnoreCase));
-        if (resourceName == null) return string.Empty;
-        using var stream = assembly.GetManifestResourceStream(resourceName);
-        using var reader = new StreamReader(stream!);
-        var js = reader.ReadToEnd();
+        var js = EntryPoint.ReadEmbeddedScript();
         Request.Response.ContentType = "text/javascript; charset=utf-8";
         return js;
     }

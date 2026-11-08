@@ -44,7 +44,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             },
             new PluginPageInfo
             {
-                Name = "segmentloopconfigjs1123",
+                Name = "segmentloopconfigjs1126",
                 EmbeddedResourcePath = GetType().Namespace + ".config.js"
             }
         };

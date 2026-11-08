@@ -179,16 +179,21 @@ public sealed class EntryPoint : IServerEntryPoint, IDisposable
         catch { }
     }
 
-    private static string ReadEmbeddedScript()
+    internal static string ReadEmbeddedScript()
     {
         var assembly = Assembly.GetExecutingAssembly();
-        var name = assembly.GetManifestResourceNames()
-            .FirstOrDefault(value => value.EndsWith("segmentloop.js", StringComparison.OrdinalIgnoreCase));
-        if (name == null) return "";
-        using var stream = assembly.GetManifestResourceStream(name);
-        if (stream == null) return "";
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
+        var scripts = new List<string>();
+        foreach (var suffix in new[] { "portraitfit.js", "segmentloop.js" })
+        {
+            var name = assembly.GetManifestResourceNames()
+                .FirstOrDefault(value => value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+            if (name == null) continue;
+            using var stream = assembly.GetManifestResourceStream(name);
+            if (stream == null) continue;
+            using var reader = new StreamReader(stream);
+            scripts.Add(reader.ReadToEnd());
+        }
+        return string.Join(Environment.NewLine, scripts);
     }
 
     private void InjectItemJsHook()

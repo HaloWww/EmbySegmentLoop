@@ -70,7 +70,10 @@ def main() -> None:
     args = parser.parse_args()
 
     output = args.output.resolve()
-    client_text = Path(__file__).with_name("segmentloop.js").read_text(encoding="utf-8")
+    client_text = "\n".join(
+        Path(__file__).with_name(name).read_text(encoding="utf-8")
+        for name in ("portraitfit.js", "segmentloop.js")
+    )
     client_script = client_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     originals: dict[str, bytes] = {}
     if args.from_original:

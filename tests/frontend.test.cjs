@@ -35,15 +35,120 @@ function harness(api = {}) {
     const prefix = source.slice(0, source.indexOf('    window.EmbySegLoop ='));
     vm.runInContext(prefix + `
         renderAll = function () {};
+        window.toasts = [];
+        showToast = function (message) { window.toasts.push(message); };
         window.testApi = { parseTime, formatFileSize, getDetailItemInfo, renderDetailInfo, fillDetailHost, saveSegment, getItemSegments,
-            ensureItemLoaded, onVideoTimeUpdate, rememberPlaybackItemId, getPlaybackTimeMs, seekVideo,
-            renderCardHighlights, scheduleCardHighlights,
+            ensureItemLoaded, setItemSegments, onVideoTimeUpdate, rememberPlaybackItemId, getPlaybackTimeMs, seekVideo,
+            copySegments, getSegmentClipboard, segmentClipboardKey, appendCopiedSegments, pasteSegments, isSegmentTimeValid,
+            setEditor: value => { openEditor = value; },
+            renderCardHighlights, scheduleCardHighlights, loadShortcutConfiguration,
             setHighlightMode: value => { shortcutConfigurationLoaded = true; window.EmbySegmentLoopConfig = { cardHighlightMode: value }; },
             setActive: value => { activeSegment = value; }, getActive: () => activeSegment,
             setManager: value => { resolvedPlaybackManager = value; } };
     }());`, context);
     return { api: context.testApi, video, storage, context };
 }
+
+test('copy one or all preserves order and timing without writing to the source, with user-scoped cross-tab storage', async () => {
+    const source = [
+        { Id: 'a', Name: '片段 7', StartMs: 1001, EndMs: 2002, Order: 1 },
+        { Id: 'b', Name: '中文名字', StartMs: 3003, EndMs: 4004, Order: 2 }
+    ];
+    let posts = 0;
+    const { api, context, storage } = harness({ getJSON: async () => ({ Segments: source, Revision: 'source-r' }),
+        ajax: async () => { posts++; return { Revision: 'r' }; } });
+    assert.equal(await api.copySegments('source', { id: 'b' }), true);
+    assert.equal(api.getSegmentClipboard().segments.length, 1);
+    assert.equal(api.getSegmentClipboard().segments[0].startMs, 3003);
+    assert.equal(await api.copySegments('source'), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.getSegmentClipboard().segments)), [
+        { name: '片段 7', startMs: 1001, endMs: 2002 }, { name: '中文名字', startMs: 3003, endMs: 4004 }
+    ]);
+    assert.equal(posts, 0);
+    const otherTab = harness();
+    otherTab.context.localStorage.getItem = key => storage.get(key);
+    assert.equal(otherTab.api.getSegmentClipboard().segments.length, 2);
+    context.ApiClient.getCurrentUserId = () => 'another-user';
+    assert.equal(api.getSegmentClipboard(), null);
+    context.ApiClient.getCurrentUserId = () => 'user';
+    context.ApiClient.getUrl = path => 'other-server/' + path;
+    assert.equal(api.getSegmentClipboard(), null);
+});
+
+test('paste appends fresh IDs, preserves all names and existing segments, and waits for explicit preview save', async () => {
+    const posted = [];
+    let preview;
+    const { api, context } = harness({
+        getJSON: async url => ({ Segments: url.endsWith('/source')
+            ? [{ Id: 'same', Name: '片段 7', StartMs: 1001, EndMs: 2002, Order: 1 }]
+            : [{ Id: 'same', Name: '已有片段', StartMs: 0, EndMs: 1000, Order: 1 }], Revision: 'loaded' }),
+        getItem: async () => ({ MediaType: 'Video', RunTimeTicks: 100000000 }),
+        ajax: async request => { posted.push(JSON.parse(request.data)); return { Revision: 'saved' }; }
+    });
+    await api.copySegments('source');
+    context.location.href = 'http://localhost/web/index.html#!/item?id=target';
+    api.setEditor((id, single, paste) => { preview = { id, paste }; });
+    assert.equal(await api.pasteSegments('target'), true);
+    assert.equal(posted.length, 0);
+    assert.equal(preview.id, 'target');
+    assert.equal(preview.paste.durationMs, 10000);
+    const current = api.getItemSegments('target');
+    const draft = api.appendCopiedSegments(current, preview.paste.segments);
+    assert.equal(draft.length, 2);
+    assert.equal(current.length, 1);
+    assert.equal(draft[0].id, 'same');
+    assert.notEqual(draft[1].id, 'same');
+    assert.equal(draft[1].name, '片段 7');
+    assert.equal(draft[1].startMs, 1001);
+    assert.equal(draft[1].order, 2);
+    assert.notEqual(api.appendCopiedSegments(current, preview.paste.segments)[1].id, draft[1].id);
+    assert.equal(await api.setItemSegments('target', draft, { preserveNames: true }), true);
+    assert.equal(posted[0].ExpectedRevision, 'loaded');
+    assert.equal(posted[0].Segments[1].name, '片段 7');
+    assert.equal(posted[0].Segments[0].name, '已有片段');
+    assert.equal(posted[0].ItemId, 'target');
+});
+
+test('invalid clipboard and failed target load cannot open a paste editor or write media data', async () => {
+    let posts = 0, previews = 0;
+    const { api, context, storage } = harness({
+        getJSON: async url => { if (url.endsWith('/target')) throw Error('offline'); return { Segments: [
+            { Id: 's', Name: '片段', StartMs: 1, EndMs: 2, Order: 1 }], Revision: 'r' }; },
+        getItem: async () => ({ MediaType: 'Video' }), ajax: async () => { posts++; }
+    });
+    api.setEditor(() => previews++);
+    context.location.href = 'http://localhost/web/index.html#!/item?id=target';
+    assert.equal(await api.pasteSegments('target'), false);
+    await api.copySegments('source');
+    assert.equal(await api.pasteSegments('target'), false);
+    assert.equal(previews, 0);
+    assert.equal(posts, 0);
+    for (const value of ['broken JSON', JSON.stringify({ version: 1, segments: [{ name: 'bad', startMs: -1, endMs: 2 }] }),
+        JSON.stringify({ version: 1, segments: [{ name: 'bad', startMs: 1, endMs: 1 }] }),
+        JSON.stringify({ version: 1, segments: new Array(1001).fill({ name: 'x', startMs: 1, endMs: 2 }) })]) {
+        storage.set(api.segmentClipboardKey(), value);
+        assert.equal(api.getSegmentClipboard(), null);
+    }
+});
+
+test('storage write failure still pastes the newly copied content in the current tab', async () => {
+    const { api, context } = harness({ getJSON: async () => ({ Segments: [
+        { Id: 's', Name: '新复制', StartMs: 5, EndMs: 10, Order: 1 }], Revision: 'r' }) });
+    context.localStorage.getItem = () => JSON.stringify({ version: 1, segments: [{ name: '旧复制', startMs: 1, endMs: 2 }] });
+    context.localStorage.setItem = () => { throw Error('quota'); };
+    assert.equal(await api.copySegments('source'), true);
+    assert.equal(api.getSegmentClipboard().segments[0].name, '新复制');
+    assert.match(context.toasts.at(-1), /仅当前标签页/);
+});
+
+test('paste time validation accepts the exact video end and rejects ranges beyond the target duration', () => {
+    const { api } = harness();
+    assert.equal(api.isSegmentTimeValid(1001, 10000, 10000), true);
+    assert.equal(api.isSegmentTimeValid(1001, 10001, 10000), false);
+    assert.equal(api.isSegmentTimeValid(1001, 20000, null), true);
+    for (const times of [[-1, 2000], [1000, 1000], [2000, 1000], [NaN, 2000], [0, Infinity]])
+        assert.equal(api.isSegmentTimeValid(...times, 10000), false);
+});
 
 test('time input accepts milliseconds and rejects extra fields, negative and invalid clock components', () => {
     const { api } = harness();
@@ -119,6 +224,153 @@ test('both mode batches duplicate cards, caches segment state and clears borders
     api.setHighlightMode('None');
     api.renderCardHighlights();
     assert.ok(cards.every(card => card.classes.size === 0));
+});
+
+test('a low numeric item ID keeps its segment border after browsing more than 512 cached videos', async () => {
+    const requests = [];
+    const items = Array.from({ length: 100 }, (_, index) => ({ Id: String(10000 + index), Type: 'Video' }));
+    const { api, cards } = cardHarness('Segments', items, url => {
+        const ids = url.split('=')[1].split(',');
+        requests.push(ids);
+        // Bound the old cache-eviction bug: it immediately requests the same
+        // low ID again forever after dropping the successful response.
+        if (requests.length > 7) return new Promise(() => {});
+        return Promise.resolve({ ItemIds: ids.filter(id => id === '1') });
+    });
+
+    // Browse six pages through reused card nodes, filling exactly 512 entries
+    // using real render/query cycles rather than reaching into cache internals.
+    for (let start = 0; start < 512; start += 100) {
+        for (let index = 0; index < items.length; index++) {
+            cards[index].isConnected = start + index < 512;
+            items[index].Id = String(10000 + start + index);
+        }
+        api.renderCardHighlights();
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(requests.length, 6);
+    assert.equal(requests.flat().length, 512);
+
+    items[0].Id = '1';
+    cards.forEach((card, index) => { card.isConnected = index === 0; });
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(cards[0].classes.has('embySegmentSavedCard'), 'the newly fetched low ID must survive cache eviction');
+    assert.equal(requests.length, 7, 'the successful low-ID request must not immediately repeat');
+
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(cards[0].classes.has('embySegmentSavedCard'));
+    assert.equal(requests.length, 7, 'subsequent renders should reuse the newly cached status');
+});
+
+function fakeClock(context) {
+    let now = 100000, sequence = 0;
+    const timers = new Map();
+    context.Date = class extends Date { static now() { return now; } };
+    context.setTimeout = (callback, delay) => {
+        const id = ++sequence;
+        timers.set(id, { callback, at: now + delay });
+        return id;
+    };
+    context.clearTimeout = id => timers.delete(id);
+    context.AbortController = AbortController;
+    return async milliseconds => {
+        now += milliseconds;
+        for (const [id, timer] of [...timers]) {
+            if (timer.at <= now) { timers.delete(id); timer.callback(); }
+        }
+        await new Promise(resolve => setImmediate(resolve));
+    };
+}
+
+test('a hung highlight request is aborted and retried without refreshing; its late result is ignored', async () => {
+    let calls = 0, firstSignal, lateResult;
+    const { api, cards, context } = cardHarness('Segments', [{ Id: '1', Type: 'Video' }], (url, signal) => {
+        calls++;
+        if (calls === 1) {
+            firstSignal = signal;
+            return new Promise(resolve => { lateResult = resolve; });
+        }
+        return Promise.resolve({ ItemIds: ['1'] });
+    });
+    const advance = fakeClock(context);
+    api.renderCardHighlights();
+    assert.equal(calls, 1);
+    await advance(8000);
+    assert.equal(firstSignal.aborted, true);
+    await advance(3000);
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 2);
+    assert.ok(cards[0].classes.has('embySegmentSavedCard'));
+    lateResult({ ItemIds: [] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(cards[0].classes.has('embySegmentSavedCard'));
+    assert.equal(calls, 2);
+});
+
+test('transient highlight failure preserves an existing border and retries promptly', async () => {
+    let calls = 0;
+    const { api, cards, context } = cardHarness('Segments', [{ Id: '1', Type: 'Video' }], async () => {
+        if (++calls === 2) throw Error('temporary network failure');
+        return { ItemIds: ['1'] };
+    });
+    const advance = fakeClock(context);
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    await advance(30000);
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 2);
+    assert.ok(cards[0].classes.has('embySegmentSavedCard'));
+    await advance(3000);
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 3);
+    assert.ok(cards[0].classes.has('embySegmentSavedCard'));
+});
+
+test('a hung configuration request can recover without reloading the page', async () => {
+    let calls = 0, lateResult, firstSignal;
+    const { api, context } = harness({ getJSON: (url, signal) => {
+        assert.equal(url, 'SegmentLoop/ClientConfiguration');
+        if (++calls === 1) {
+            firstSignal = signal;
+            return new Promise(resolve => { lateResult = resolve; });
+        }
+        return Promise.resolve({ CardHighlightMode: 'Segments' });
+    } });
+    context.requestAnimationFrame = callback => callback();
+    const advance = fakeClock(context);
+    api.loadShortcutConfiguration();
+    api.loadShortcutConfiguration();
+    assert.equal(calls, 1);
+    await advance(8000);
+    assert.equal(firstSignal.aborted, true);
+    await advance(3000);
+    api.loadShortcutConfiguration();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 2);
+    assert.equal(context.EmbySegmentLoopConfig.cardHighlightMode, 'Segments');
+    lateResult({ CardHighlightMode: 'None' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(context.EmbySegmentLoopConfig.cardHighlightMode, 'Segments');
+});
+
+test('a page with more than 512 cards highlights every item without repeated request loops', async () => {
+    let calls = 0;
+    const items = Array.from({ length: 600 }, (_, i) => ({ Id: String(i + 1), Type: 'Video' }));
+    const { api, cards } = cardHarness('Segments', items, url => {
+        if (++calls > 6) return new Promise(() => {});
+        return Promise.resolve({ ItemIds: url.split('=')[1].split(',') });
+    });
+    api.renderCardHighlights();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 6);
+    assert.ok(cards.every(card => card.classes.has('embySegmentSavedCard')));
+    api.renderCardHighlights();
+    assert.equal(calls, 6);
 });
 
 test('recycled card nodes drop the previous movie border and segment-only mode excludes favorite border', async () => {

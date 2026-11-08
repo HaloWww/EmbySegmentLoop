@@ -31,7 +31,7 @@ MP4_SUFFIXES = {".mp4", ".m4v", ".mov"}
 DEFAULT_GAP_BYTES = 8 * 1024 * 1024
 RAM_RESERVE_BYTES = 256 * 1024 * 1024
 CACHE_COMMIT_INTERVAL = 500
-CACHE_POLICY_VERSION = 2
+CACHE_POLICY_VERSION = 3
 AAC_FALLBACK_BITRATE = "320k"
 UNSUPPORTED_CONTAINER_CODEC_MARKERS = (
     "could not find tag for codec",
@@ -187,7 +187,7 @@ def probe(path: Path, ffprobe: str) -> dict:
             (
                 "format=format_name,duration,size:"
                 "format_tags=major_brand:"
-                "stream=index,codec_type,codec_name"
+                "stream=index,codec_type,codec_name,profile,extradata_size"
             ),
             "-of",
             "json",
@@ -324,8 +324,14 @@ def inspect_layout(
     moov = atoms.get("moov")
     mdat = atoms.get("mdat")
     moov_problem = bool(moov and mdat and moov[0] > mdat[0])
+    fragmented_problem = "moof" in atoms
+    aac_config_problem = bool(missing_aac_configuration(path, metadata))
     if moov_problem:
         reasons.append(f"moov 位于 mdat 之后（moov offset={moov[0]}）")
+    if fragmented_problem:
+        reasons.append("分片 MP4：转换为普通 MP4 并前置完整索引，避免浏览器逐片读取后才开始播放")
+    if aac_config_problem:
+        reasons.append("AAC 音轨缺少解码初始化配置，可能导致浏览器直接播放兼容异常")
     bif_timing_problem, bif_reasons = inspect_bif_timing_compatibility(
         path,
         ffprobe,
@@ -362,6 +368,8 @@ def inspect_layout(
     return (
         bif_timing_problem
         or packet_gap_problem
+        or fragmented_problem
+        or aac_config_problem
         or (fix_moov_only and moov_problem)
     ), reasons, metadata
 
@@ -410,6 +418,10 @@ def validate_remux(
 
     if output.suffix.lower() in MP4_SUFFIXES:
         atoms = top_level_atoms(output)
+        if "moof" in atoms:
+            raise RuntimeError("输出文件仍是分片 MP4，未生成普通 MP4 的完整索引")
+        if missing_aac_configuration(output, output_metadata):
+            raise RuntimeError("输出 AAC 音轨仍缺少解码初始化配置")
         if atoms.get("moov") and atoms.get("mdat") and atoms["moov"][0] > atoms["mdat"][0]:
             raise RuntimeError("输出文件的 moov 仍位于 mdat 之后")
         bif_problem, bif_reasons = inspect_bif_timing_compatibility(
@@ -443,7 +455,11 @@ def sync_file_system(path: Path) -> None:
 
 def replace_from_staging(source: Path, staged_output: Path, expected_stat: os.stat_result | None = None) -> None:
     token = uuid.uuid4().hex
-    backup = source.with_name(f".{source.name}.segmentloop-backup-{token}")
+    # Linux NAME_MAX counts encoded bytes. A valid source name can already be
+    # at that limit, so never append a backup suffix to the original basename.
+    backup = source.with_name(f".segmentloop-backup-{token}")
+    if backup.exists():
+        raise RemuxPreparationError(f"备份路径已存在，已取消替换：{backup}")
     original_stat = source.stat()
     if expected_stat is not None:
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
@@ -491,6 +507,17 @@ def replace_from_staging(source: Path, staged_output: Path, expected_stat: os.st
             fsync_directory(source.parent)
             sync_file_system(source)
         raise
+
+
+def missing_aac_configuration(path: Path, metadata: dict) -> list[dict]:
+    if path.suffix.lower() not in MP4_SUFFIXES:
+        return []
+    return [
+        stream for stream in metadata.get("streams", [])
+        if str(stream.get("codec_type") or "").lower() == "audio"
+        and str(stream.get("codec_name") or "").lower() == "aac"
+        and int(stream.get("extradata_size") or 0) <= 0
+    ]
 
 
 def should_retry_audio_as_aac(path: Path, metadata: dict, ffmpeg_error: str) -> bool:
@@ -589,13 +616,22 @@ def remux(
                 build_remux_command(ffmpeg, path, staged_output, False),
                 environment,
             )
+            retry_reason = None
             if result.returncode != 0:
                 detail = (result.stderr or "FFmpeg 没有输出错误详情").strip()
                 if not should_retry_audio_as_aac(path, metadata, detail):
                     raise RemuxPreparationError(detail)
+                retry_reason = "源音频编码不受 MP4 容器支持"
+            elif missing_aac_configuration(path, metadata):
+                # Copying raw AAC packets can succeed while preserving a broken
+                # esds without DecoderSpecificInfo. Check the actual output.
+                copied_metadata = probe(staged_output, ffprobe)
+                if missing_aac_configuration(staged_output, copied_metadata):
+                    retry_reason = "无损重封装后 AAC 解码初始化配置仍缺失"
+            if retry_reason:
                 staged_output.unlink(missing_ok=True)
                 print(
-                    "  源音频编码不受 MP4 容器支持；保持视频及其他流复制，"
+                    f"  {retry_reason}；保持视频及其他流复制，"
                     f"仅将音频转为 AAC {AAC_FALLBACK_BITRATE}……",
                     flush=True,
                 )
@@ -609,7 +645,7 @@ def remux(
                         result.stderr or "FFmpeg 音频 AAC 回退没有输出错误详情"
                     ).strip()
                     raise RemuxPreparationError(
-                        "无损复制失败后，音频 AAC 回退也失败：\n" + retry_detail
+                        "音频 AAC 回退失败：\n" + retry_detail
                     )
             validate_remux(
                 metadata,
@@ -629,8 +665,8 @@ def remux(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "检查并优先无损重封装常见视频容器；MP4 不支持源音频编码时仅将音频"
-            "转为 AAC。优先使用内存，可配置磁盘备用目录。"
+            "检查并优先无损重封装常见视频容器；处理分片 MP4、音视频交错和 AAC "
+            "初始化配置缺失；必要时仅将音频转为 AAC。优先使用内存，可配置磁盘备用目录。"
         )
     )
     parser.add_argument("directory", type=Path, help="要递归检查的目录")
@@ -787,7 +823,7 @@ def main() -> int:
                 if not is_problematic:
                     cache.record(path, before_stat, policy, "normal")
                     print(
-                        "  正常：未发现音视频包间距、MP4 索引或 BIF 时间戳兼容异常"
+                        "  正常：未发现音视频包间距、MP4 索引、AAC 配置或 BIF 时间戳兼容异常"
                     )
                     continue
                 problematic += 1

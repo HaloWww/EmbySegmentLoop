@@ -23,13 +23,18 @@
     var detailInfoCache = {};
     var detailInfoPromises = {};
     var cardHighlightCache = {};
+    var cardHighlightCacheOrder = [];
     var cardHighlightRequest = null;
     var cardHighlightContext = null;
     var cardHighlightGeneration = 0;
+    var segmentClipboardMemory = null;
+    var pastedSegmentSequence = 0;
     var pendingSegmentLaunch = null;
     var shortcutConfigurationLoading = false;
     var shortcutConfigurationLoaded = false;
     var shortcutConfigurationRetryAt = 0;
+    var shortcutConfigurationContext = null;
+    var shortcutConfigurationRequest = null;
     var bifThumbnailCache = {};
     var bifThumbnailCacheOrder = [];
     var bifThumbnailPromises = {};
@@ -78,15 +83,48 @@
         };
     }
 
+    function requestClientJson(url) {
+        // ApiClient.getJSON has no default deadline. A request that never settles
+        // must not leave configuration or all later highlight batches blocked.
+        return new Promise(function (resolve, reject) {
+            var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timer = setTimeout(function () {
+                reject(new Error('Segment Loop request timed out'));
+                if (controller) controller.abort();
+            }, 8000);
+            try {
+                Promise.resolve(ApiClient.getJSON(url, controller ? controller.signal : undefined)).then(function (value) {
+                    clearTimeout(timer);
+                    resolve(value);
+                }, function (error) {
+                    clearTimeout(timer);
+                    reject(error);
+                });
+            } catch (error) {
+                clearTimeout(timer);
+                reject(error);
+            }
+        });
+    }
+
     function loadShortcutConfiguration() {
-        if (shortcutConfigurationLoaded || shortcutConfigurationLoading ||
-            Date.now() < shortcutConfigurationRetryAt ||
-            typeof ApiClient === 'undefined' || !ApiClient ||
-            typeof ApiClient.getJSON !== 'function') {
+        if (typeof ApiClient === 'undefined' || !ApiClient ||
+            typeof ApiClient.getJSON !== 'function' || typeof ApiClient.getUrl !== 'function') {
             return;
         }
+        var context = ApiClient.getUrl('SegmentLoop/ClientConfiguration');
+        if (shortcutConfigurationContext && shortcutConfigurationContext !== context) {
+            shortcutConfigurationLoaded = false;
+            shortcutConfigurationLoading = false;
+            shortcutConfigurationRetryAt = 0;
+        }
+        shortcutConfigurationContext = context;
+        if (shortcutConfigurationLoaded || shortcutConfigurationLoading || Date.now() < shortcutConfigurationRetryAt) return;
+        var request = { context: context };
+        shortcutConfigurationRequest = request;
         shortcutConfigurationLoading = true;
-        ApiClient.getJSON(ApiClient.getUrl('SegmentLoop/ClientConfiguration')).then(function (config) {
+        requestClientJson(context).then(function (config) {
+            if (shortcutConfigurationRequest !== request) return;
             window.EmbySegmentLoopConfig = {
                 startKey: config.StartKey || '[',
                 endKey: config.EndKey || ']',
@@ -94,10 +132,11 @@
                 cardHighlightMode: config.CardHighlightMode || 'Both'
             };
             shortcutConfigurationLoaded = true;
+            scheduleCardHighlights();
         }).catch(function () {
-            shortcutConfigurationRetryAt = Date.now() + 30000;
+            if (shortcutConfigurationRequest === request) shortcutConfigurationRetryAt = Date.now() + 3000;
         }).then(function () {
-            shortcutConfigurationLoading = false;
+            if (shortcutConfigurationRequest === request) shortcutConfigurationLoading = false;
         });
     }
 
@@ -114,7 +153,7 @@
         return sortSegments(local);
     }
 
-    function setItemSegments(itemId, segments) {
+    function setItemSegments(itemId, segments, options) {
         var previous = itemSavePromises[itemId] || Promise.resolve();
         var pending = previous.catch(function () {}).then(function () {
             return ensureItemLoaded(itemId);
@@ -126,7 +165,7 @@
             var values = typeof segments === 'function' ? segments(getItemSegments(itemId)) : segments;
             var normalized = sortSegments(values).map(function (segment, index) {
                 var copy = Object.assign({}, segment, { order: index + 1 });
-                if (/^片段\s*\d+$/.test(copy.name || '')) {
+                if (!(options && options.preserveNames) && /^片段\s*\d+$/.test(copy.name || '')) {
                     copy.name = '片段 ' + (index + 1);
                 }
                 return copy;
@@ -798,7 +837,97 @@
         }, 1800);
     }
 
-    function openEditor(itemId, selectedSegment) {
+    function segmentClipboardKey() {
+        if (!window.ApiClient || typeof ApiClient.getCurrentUserId !== 'function') return null;
+        return 'embySegmentLoop.clipboard.v1|' + ApiClient.getUrl('SegmentLoop/Segments') + '|' + ApiClient.getCurrentUserId();
+    }
+
+    function getSegmentClipboard() {
+        var key = segmentClipboardKey();
+        if (!key) return null;
+        var value;
+        var raw;
+        try {
+            if (segmentClipboardMemory && segmentClipboardMemory.key === key && segmentClipboardMemory.fallback) {
+                value = segmentClipboardMemory.value;
+            } else {
+                raw = localStorage.getItem(key);
+            }
+        } catch (error) {
+            value = segmentClipboardMemory && segmentClipboardMemory.key === key ? segmentClipboardMemory.value : null;
+        }
+        if (value === undefined) {
+            if (raw && raw.length > 1048576) return null;
+            try { value = raw ? JSON.parse(raw) : null; } catch (error) { return null; }
+        }
+        if (!value || value.version !== 1 || !Array.isArray(value.segments) ||
+            !value.segments.length || value.segments.length > 1000) return null;
+        if (!value.segments.every(function (segment) {
+            return segment && typeof segment.name === 'string' &&
+                Number.isSafeInteger(segment.startMs) && Number.isSafeInteger(segment.endMs) &&
+                segment.startMs >= 0 && segment.endMs > segment.startMs;
+        })) return null;
+        return value;
+    }
+
+    function copySegments(itemId, selectedSegment) {
+        return ensureItemLoaded(itemId).then(function (loaded) {
+            if (!loaded) { showToast('无法读取片段，请稍后重试'); return false; }
+            var segments = getItemSegments(itemId);
+            if (selectedSegment) segments = segments.filter(function (segment) { return segment.id === selectedSegment.id; });
+            var key = segmentClipboardKey();
+            if (!key || !segments.length) { showToast('没有可复制的片段'); return false; }
+            if (segments.length > 1000) { showToast('一次最多复制1000个片段'); return false; }
+            var value = { version: 1, sourceItemId: String(itemId), copiedAt: Date.now(), segments: segments.map(function (segment) {
+                return { name: segment.name || '', startMs: segment.startMs, endMs: segment.endMs };
+            }) };
+            var raw = JSON.stringify(value);
+            if (raw.length > 1048576) { showToast('片段内容过大，无法复制'); return false; }
+            segmentClipboardMemory = { key: key, value: value };
+            var persisted = true;
+            try { localStorage.setItem(key, raw); } catch (error) { persisted = false; segmentClipboardMemory.fallback = true; }
+            renderAll();
+            showToast('已复制 ' + segments.length + ' 个片段；到目标视频点击“粘贴片段”' + (persisted ? '' : '（仅当前标签页可用）'));
+            return true;
+        });
+    }
+
+    function appendCopiedSegments(current, copied) {
+        var segments = cloneSegments(current);
+        var order = segments.reduce(function (max, segment, index) { return Math.max(max, getSegmentOrder(segment, index)); }, 0);
+        var ids = {};
+        segments.forEach(function (segment) { ids[segment.id] = true; });
+        copied.forEach(function (segment) {
+            var id;
+            do { id = 'paste-' + Date.now() + '-' + (++pastedSegmentSequence) + '-' + Math.random().toString(36).slice(2); } while (ids[id]);
+            ids[id] = true;
+            segments.push({ id: id, name: segment.name, startMs: segment.startMs, endMs: segment.endMs, order: ++order });
+        });
+        return segments;
+    }
+
+    function pasteSegments(itemId) {
+        var clipboard = getSegmentClipboard();
+        if (!clipboard) { showToast('请先在来源视频中复制片段'); return Promise.resolve(false); }
+        // Snapshot before awaiting: copying from another tab must not change this paste operation.
+        var copied = cloneSegments(clipboard.segments);
+        return Promise.all([ensureItemLoaded(itemId), getDetailItemInfo(itemId)]).then(function (results) {
+            if (!results[0] || !results[1] || results[1].MediaType !== 'Video') {
+                showToast('无法读取目标视频，请稍后重试'); return false;
+            }
+            if (String(getUrlItemId()) !== String(itemId)) return false;
+            var durationMs = Number(results[1].RunTimeTicks) / 10000;
+            openEditor(itemId, null, { segments: copied, durationMs: isFinite(durationMs) && durationMs > 0 ? durationMs : null });
+            return true;
+        });
+    }
+
+    function isSegmentTimeValid(startMs, endMs, durationMs) {
+        return isFinite(startMs) && isFinite(endMs) && startMs >= 0 && endMs > startMs &&
+            (!durationMs || endMs <= durationMs);
+    }
+
+    function openEditor(itemId, selectedSegment, paste) {
         if (!itemId) {
             showToast('无法识别视频');
             return;
@@ -806,11 +935,20 @@
         closeEditor();
         var originalSegments = cloneSegments(getItemSegments(itemId));
         var editingSingle = !!selectedSegment;
-        var segments = editingSingle ? cloneSegments([selectedSegment]) : originalSegments.slice();
+        var segments = paste ? appendCopiedSegments(originalSegments, paste.segments)
+            : editingSingle ? cloneSegments([selectedSegment]) : originalSegments.slice();
+        var originalIds = {};
+        if (paste) originalSegments.forEach(function (segment) { originalIds[segment.id] = true; });
         var overlay = document.createElement('div');
         overlay.className = 'embySegmentDialogOverlay';
         overlay.innerHTML = '<div class="embySegmentDialog"><div class="embySegmentDialogHeader"><h2>片段编辑</h2><button type="button" class="embySegmentDialogClose paper-icon-button-light" title="取消" aria-label="关闭"><i class="md-icon">close</i></button></div><div class="embySegmentDialogBody"><div class="embySegmentHelp">时间支持秒或 HH:MM:SS.mmm，例如 83.250 或 0:01:23.250。快捷键请在 Emby 插件设置中修改。</div><div class="embySegmentEditorRows"></div><button type="button" class="embySegmentEditorAdd raised">+ 新建片段</button></div><div class="embySegmentDialogFooter"><button type="button" class="embySegmentCancel raised cancel">取消</button><button type="button" class="embySegmentSave raised submit">保存</button></div></div>';
         document.body.appendChild(overlay);
+
+        if (paste) {
+            overlay.querySelector('h2').textContent = '粘贴片段';
+            overlay.querySelector('.embySegmentHelp').textContent = '已追加 ' + paste.segments.length + ' 个片段，保留目标视频原有片段。检查名称和时间后点击“保存”；取消不会修改视频。' +
+                (paste.durationMs ? '目标视频时长：' + formatTime(paste.durationMs) + '，新增片段不得超出此时长。' : '目标视频时长未知，请确认新增片段范围。');
+        }
 
         var unsaved = getState().unsavedItems;
         if (unsaved && Array.isArray(unsaved[itemId])) {
@@ -894,7 +1032,7 @@
                 if (!row) return;
                 var startMs = parseTime(segment.startText);
                 var endMs = parseTime(segment.endText);
-                if (!isFinite(startMs) || !isFinite(endMs) || endMs <= startMs) {
+                if (!isSegmentTimeValid(startMs, endMs, paste && !originalIds[segment.id] ? paste.durationMs : null)) {
                     invalid = true;
                     row.classList.add('embySegmentInvalid');
                     return;
@@ -908,12 +1046,12 @@
                 });
             });
             if (invalid) {
-                showToast('请修正无效片段时间');
+                showToast(paste ? '请修正无效时间或超出目标视频时长的片段' : '请修正无效片段时间');
                 return;
             }
             var saveButton = overlay.querySelector('.embySegmentSave');
             saveButton.disabled = true;
-            setItemSegments(itemId, newSegments).then(function (saved) {
+            setItemSegments(itemId, newSegments, { preserveNames: !!paste }).then(function (saved) {
                 saveButton.disabled = false;
                 if (!saved) {
                     showToast('数据库保存失败，请重试');
@@ -1180,6 +1318,8 @@
             var key = segments.map(function (s) {
                 return [s.id, s.name, s.startMs, s.endMs, s.order].join(':');
             }).join(',');
+            var clipboard = getSegmentClipboard();
+            key += '|clipboard:' + (clipboard ? clipboard.copiedAt + ':' + clipboard.segments.length : 'empty');
             if (host.getAttribute('data-segkey') === key) return;
             host.setAttribute('data-segkey', key);
             host.innerHTML = '<div class="embySegmentTitle">循环片段</div>';
@@ -1201,7 +1341,15 @@
                 edit.setAttribute('aria-label', '编辑片段');
                 edit.innerHTML = '<i class="md-icon">more_horiz</i>';
                 edit.onclick = function () { openEditor(itemId, segment); };
+                var copy = document.createElement('button');
+                copy.type = 'button';
+                copy.className = 'embySegmentGear paper-icon-button-light';
+                copy.title = '复制此片段';
+                copy.setAttribute('aria-label', '复制此片段：' + (segment.name || '未命名片段'));
+                copy.innerHTML = '<i class="md-icon">content_copy</i>';
+                copy.onclick = function () { copySegments(itemId, segment); };
                 wrap.appendChild(button);
+                wrap.appendChild(copy);
                 wrap.appendChild(edit);
                 rows.appendChild(wrap);
             });
@@ -1211,6 +1359,21 @@
             add.textContent = '编辑片段';
             add.onclick = function () { openEditor(itemId); };
             rows.appendChild(add);
+            var copyAll = document.createElement('button');
+            copyAll.type = 'button';
+            copyAll.className = 'embySegmentTransfer raised';
+            copyAll.textContent = '复制全部片段';
+            copyAll.disabled = !segments.length;
+            copyAll.onclick = function () { copySegments(itemId); };
+            rows.appendChild(copyAll);
+            var paste = document.createElement('button');
+            paste.type = 'button';
+            paste.className = 'embySegmentTransfer raised';
+            paste.textContent = '粘贴片段' + (clipboard ? '（' + clipboard.segments.length + '）' : '');
+            paste.title = '先在来源视频复制片段，再在这里追加；检查后保存';
+            paste.disabled = !clipboard;
+            paste.onclick = function () { pasteSegments(itemId); };
+            rows.appendChild(paste);
             host.appendChild(rows);
         });
     }
@@ -1474,6 +1637,7 @@
         style.textContent = '.embySegmentDetailList{margin-top:.7em}.embySegmentTitle{font-weight:600;margin-bottom:.35em}.embySegmentRows{display:flex;gap:.45em;flex-wrap:wrap;align-items:center}.embySegmentChipWrap{display:inline-flex;align-items:center;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden}.embySegmentChip,.embySegmentAdd,.embySegmentSettings,.embySegmentGear,.embySegmentOsdChip{border:0;color:inherit;background:rgba(255,255,255,.16);border-radius:999px;padding:.55em .9em;cursor:pointer}.embySegmentDelete,.embySegmentDialogClose{font-family:Material Icons,Material Icons Round,Arial}.embySegmentGear{font-size:.9em;border-radius:0;padding:.55em .8em;background:rgba(255,255,255,.08)}.embySegmentChip{border-radius:999px 0 0 999px;background:transparent}.embySegmentAdd,.embySegmentSettings,.embySegmentSave{background:#43a047;color:#fff}.embySegmentOsdList{display:flex;gap:.4em;flex-wrap:wrap;justify-content:center;margin:.25em 0 .55em}.embySegmentOsdChip{font-size:.9em;background:rgba(0,0,0,.45);backdrop-filter:blur(8px)}.embySegmentOsdChip.active{background:#43a047;color:#fff}.embySegmentToast{position:fixed;left:50%;bottom:12%;transform:translateX(-50%);z-index:999999;background:rgba(0,0,0,.84);color:#fff;border-radius:999px;padding:.75em 1.1em;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.35)}.embySegmentDialogOverlay{position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:2rem}.embySegmentDialog{width:min(920px,96vw);max-height:92vh;display:flex;flex-direction:column;background:#202020;color:#fff;border-radius:.35rem;box-shadow:0 18px 55px rgba(0,0,0,.55);overflow:hidden}.embySegmentDialogHeader,.embySegmentDialogFooter{display:flex;align-items:center;padding:1.1rem 1.4rem;background:#262626}.embySegmentDialogHeader{justify-content:space-between}.embySegmentDialogHeader h2{font-size:1.45rem;margin:0;font-weight:500}.embySegmentDialogClose,.embySegmentDelete{border:0;background:transparent;color:inherit;cursor:pointer}.embySegmentDialogClose{font-size:28px}.embySegmentDialogBody{padding:1.2rem 1.4rem;overflow:auto}.embySegmentDialogFooter{justify-content:flex-end;gap:.7rem}.embySegmentFieldGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:.7rem}.embySegmentFieldGrid label,.embySegmentEditorRow label{display:flex;flex-direction:column;gap:.35rem;color:rgba(255,255,255,.72);font-size:.88rem}.embySegmentFieldGrid input,.embySegmentEditorRow input{box-sizing:border-box;width:100%;background:#151515;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:.25rem;padding:.7rem .75rem;font:inherit}.embySegmentFieldGrid input:focus,.embySegmentEditorRow input:focus{outline:0;border-color:#43a047}.embySegmentHelp{color:rgba(255,255,255,.62);font-size:.9rem;margin:.25rem 0 1rem}.embySegmentEditorRows{display:flex;flex-direction:column;gap:.65rem;margin-bottom:1rem}.embySegmentEditorRow{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:.75rem;align-items:end;padding:.85rem;background:rgba(255,255,255,.06);border-radius:.35rem;border:1px solid transparent}.embySegmentEditorRow.embySegmentInvalid{border-color:#d32f2f}.embySegmentDelete{font-size:24px;height:2.7rem;width:2.7rem;border-radius:50%;background:rgba(255,255,255,.08)}.embySegmentEditorAdd,.embySegmentCancel,.embySegmentSave{border:0;border-radius:.25rem;padding:.65rem 1rem;color:inherit;cursor:pointer}.embySegmentCancel{background:rgba(255,255,255,.12)}@media(max-width:700px){.embySegmentDialogOverlay{padding:.75rem}.embySegmentFieldGrid,.embySegmentEditorRow{grid-template-columns:1fr}.embySegmentSettings{width:100%}.embySegmentChip{max-width:70vw;overflow:hidden;text-overflow:ellipsis}}';
         style.textContent += '.embySegmentOsdList{position:relative;z-index:2;pointer-events:auto}.embySegmentOsdChip{pointer-events:auto;touch-action:manipulation}';
         style.textContent += '.embySegmentFileInfo{margin:.65em 0;opacity:.8;font-size:.92em;overflow-wrap:anywhere}.embySegmentFileInfo[hidden]{display:none}';
+        style.textContent += '.embySegmentTransfer{border:0;border-radius:999px;padding:.55em .9em;color:inherit;background:rgba(255,255,255,.16);cursor:pointer}.embySegmentTransfer:disabled{opacity:.4;cursor:default}';
         // Paint above the image: inset outlines can be covered by absolutely positioned covers,
         // and Emby themes can reset the button border. An overlay also preserves card dimensions.
         style.textContent += '.card .cardImageContainer.embySegmentFavoriteCard::after,.card .cardImageContainer.embySegmentSavedCard::after{content:""!important;position:absolute;inset:0;z-index:5;pointer-events:none;border-radius:inherit;box-shadow:inset 0 0 0 3px #ffc857!important}.card .cardImageContainer.embySegmentSavedCard::after{box-shadow:inset 0 0 0 3px #36d9ed!important}.card .cardImageContainer.embySegmentFavoriteCard.embySegmentSavedCard::after{box-shadow:inset 0 0 0 3px #36d9ed,inset 0 0 0 6px #ffc857!important}';
@@ -1505,10 +1669,14 @@
         try {
             if (container && typeof container.getItemFromElement === 'function') item = container.getItemFromElement(card);
         } catch (error) {}
-        if (!item) {
-            item = { Id: card.getAttribute('data-id') || card.getAttribute('data-itemid'),
-                Type: card.getAttribute('data-type'), MediaType: card.getAttribute('data-mediatype') };
-        }
+        var domId = card.getAttribute('data-id') || card.getAttribute('data-itemid');
+        // Virtual lists can update the DOM before replacing their backing model.
+        // Do not paint the previous movie's status on the reused node.
+        if (item && domId && item.Id && String(item.Id) !== String(domId)) item = null;
+        item = Object.assign({}, item || {});
+        item.Id = item.Id || domId;
+        item.Type = item.Type || card.getAttribute('data-type');
+        item.MediaType = item.MediaType || card.getAttribute('data-mediatype');
         if (!item.Id || item.IsFolder ||
             (item.MediaType !== 'Video' && ['Movie', 'Episode', 'Video', 'MusicVideo'].indexOf(item.Type) < 0)) return null;
         return item;
@@ -1519,6 +1687,23 @@
         image.classList.toggle('embySegmentSavedCard', !!hasSegments && (mode === 'Segments' || mode === 'Both'));
     }
 
+    function touchCardHighlight(id) {
+        cardHighlightCacheOrder = cardHighlightCacheOrder.filter(function (savedId) { return savedId !== id; });
+        cardHighlightCacheOrder.push(id);
+    }
+
+    function cacheCardHighlight(id, value) {
+        cardHighlightCache[id] = value;
+        touchCardHighlight(id);
+    }
+
+    function trimCardHighlightCache(activeCount) {
+        // Keep the current page working even when a non-virtual list contains
+        // more than 512 cards; return to the normal limit after navigation.
+        var limit = Math.max(512, activeCount);
+        while (cardHighlightCacheOrder.length > limit) delete cardHighlightCache[cardHighlightCacheOrder.shift()];
+    }
+
     function renderCardHighlights() {
         var mode = getCardHighlightMode();
         if (!shortcutConfigurationLoaded) mode = 'None';
@@ -1527,9 +1712,11 @@
         if (context !== cardHighlightContext) {
             cardHighlightContext = context;
             cardHighlightCache = {};
+            cardHighlightCacheOrder = [];
             cardHighlightRequest = null;
         }
         var missing = [];
+        var activeIds = [];
         var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
         cards.forEach(function (card) {
             var image = card.querySelector('.cardImageContainer');
@@ -1540,35 +1727,42 @@
                 return;
             }
             var id = String(item.Id);
+            if (activeIds.indexOf(id) < 0) activeIds.push(id);
             var rating = card.querySelector('[data-isfavorite]');
             var favorite = rating ? rating.getAttribute('data-isfavorite') === 'true'
                 : !!(item.UserData && item.UserData.IsFavorite);
             var cached = cardHighlightCache[id];
+            if (cached) touchCardHighlight(id);
             applyCardHighlight(image, favorite, cached && cached.hasSegments, mode);
             if ((mode === 'Both' || mode === 'Segments') && (!cached || cached.expires <= Date.now()) && missing.indexOf(id) < 0)
                 missing.push(id);
         });
+        trimCardHighlightCache(activeIds.length);
         if (!missing.length || cardHighlightRequest) return;
         var ids = missing.slice(0, 100);
         var request = { context: context, generation: cardHighlightGeneration };
         cardHighlightRequest = request;
-        ApiClient.getJSON(ApiClient.getUrl('SegmentLoop/Highlights', { ItemIds: ids.join(',') })).then(function (result) {
-            if (context !== cardHighlightContext || request.generation !== cardHighlightGeneration) return;
-            var saved = result.ItemIds || [];
+        requestClientJson(ApiClient.getUrl('SegmentLoop/Highlights', { ItemIds: ids.join(',') })).then(function (result) {
+            if (cardHighlightRequest !== request || context !== cardHighlightContext || request.generation !== cardHighlightGeneration) return;
+            if (!result || !Array.isArray(result.ItemIds)) throw new Error('Invalid highlight response');
+            var saved = result.ItemIds.map(String);
             ids.forEach(function (id) {
-                cardHighlightCache[id] = { hasSegments: saved.indexOf(id) >= 0, expires: Date.now() + 30000 };
+                cacheCardHighlight(id, { hasSegments: saved.indexOf(id) >= 0, expires: Date.now() + 30000 });
             });
         }).catch(function (error) {
-            if (context !== cardHighlightContext) return;
+            if (cardHighlightRequest !== request || context !== cardHighlightContext || request.generation !== cardHighlightGeneration) return;
             ids.forEach(function (id) {
-                cardHighlightCache[id] = { hasSegments: false, expires: Date.now() + 15000 };
+                // Keep a previous successful positive result during a transient
+                // network failure rather than interpreting failure as no segments.
+                var previous = cardHighlightCache[id];
+                cacheCardHighlight(id, { hasSegments: !!(previous && previous.hasSegments), expires: Date.now() + 3000 });
             });
             console.debug('Segment Loop: card highlight status unavailable', error);
         }).then(function () {
             if (cardHighlightRequest !== request) return;
             cardHighlightRequest = null;
-            var keys = Object.keys(cardHighlightCache);
-            while (keys.length > 512) delete cardHighlightCache[keys.shift()];
+            // Re-render before trimming so the current cards are most recent.
+            // Object.keys would sort numeric IDs by value and evict new low IDs.
             renderCardHighlights();
         });
     }
@@ -1583,10 +1777,13 @@
         });
     }
 
-    window.EmbySegLoop = { render: renderDetailSegments, renderAll: renderAll };
+    window.EmbySegLoop = { version: '1.1.26.0', render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('scroll', function () { hideBifPreview(); scheduleCardHighlights(); }, true);
+    window.addEventListener('hashchange', scheduleCardHighlights);
+    window.addEventListener('pageshow', scheduleCardHighlights);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) scheduleCardHighlights(); });
     window.addEventListener('resize', function () { hideBifPreview(); });
     new MutationObserver(function () {
         scheduleCardHighlights();
@@ -1596,7 +1793,7 @@
         clearTimeout(renderTimer);
         renderTimer = setTimeout(renderAll, 150);
     }).observe(document.documentElement, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ['data-isfavorite', 'data-id', 'data-itemid', 'src'] });
+        attributeFilter: ['data-isfavorite', 'data-id', 'data-itemid', 'data-type', 'data-mediatype', 'src', 'class', 'hidden', 'aria-hidden'] });
     setInterval(renderPlaybackSegments, 1500);
     setInterval(onVideoTimeUpdate, 200);
     // Periodic check for detail pages – catches view restoration (display:none→block)
