@@ -1777,7 +1777,7 @@
         });
     }
 
-    window.EmbySegLoop = { version: '1.1.27.0', render: renderDetailSegments, renderAll: renderAll };
+    window.EmbySegLoop = { version: '1.1.26.0', render: renderDetailSegments, renderAll: renderAll };
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('scroll', function () { hideBifPreview(); scheduleCardHighlights(); }, true);
